@@ -208,6 +208,56 @@ thing that needs the front is the menu bar: an inactive app reports every menu
 command as disabled, so menu commands are simply not offered until the app is
 active.
 
+## The other executor
+
+The accessibility bridge in this repository is one way to reach a Mac app.
+Codex Computer Use is another, and it is better at the part this one is worst
+at: it drives an app without raising it, and it does drag, paste, key
+combinations and text selection, none of which are here.
+
+It cannot be called from outside its host. There is no package to install —
+`@oai/sky` lives inside Codex's own JavaScript runtime, where a global already
+exists — so code that wants it has to run in there. That is why
+[`runtime/loop.mjs`](runtime/loop.mjs) is JavaScript and nothing else is: it is
+a hundred lines that observe, hand the tree to a decision process, and perform
+what comes back.
+
+```js
+// in Codex's node_repl, where `sky` is already defined
+const { runTask } = await import("file:///path/to/open-computer-use/runtime/loop.mjs");
+await runTask({
+  sky,
+  app: "Calculator",
+  goal: "Compute 12 times 34",
+  dryRun: true,                       // preview one step; then set false
+  python: "/path/to/open-computer-use/.venv/bin/python",
+  env: { JEV_API_KEY: "..." },        // or DECISION_API_KEY
+});
+```
+
+The decision layer is unchanged. `cua.py` parses the tree text Computer Use
+prints into the same indexed table `action_space` has always been handed, and
+everything downstream — the operation and target heads, the risk rating, the
+refusal memory, `scaffolding` — runs as it does over the bridge's snapshot.
+
+Two things are genuinely different, and both are the executor's, not ours:
+
+- **The index is the address.** Computer Use numbers every node per
+  observation and the numbers expire with it, so the tree is re-read after
+  every action and an index is never reused. The bridge addresses by path and
+  carries the label the decision was made about, because there a path is a
+  guess about a tree that may have moved.
+- **There is no geometry.** The text says what an element is and where it sits
+  in the tree, never where it is on screen. Everything here that measures
+  rectangles is therefore off on this path: the icon/caption merge, the
+  sparseness test, and the screenshot fallback they feed.
+
+What is verified: the parser and the decision layer, against real Computer Use
+snapshots of Calculator, Calendar and NetEase Music, and the whole loop against
+a stand-in for `sky` serving one of them — four steps, real decisions, correct
+dispatch, refusal suppression. What is not: any of it against Computer Use
+itself, which needs a Codex that can run it.
+
 ## Why it moves
 
 - **One request per decision cycle.** The operation head and every target head
@@ -552,6 +602,9 @@ Known limits:
 | [`desktop.py`](open_computer_use/desktop.py) | The long-lived bridge and the settle policy |
 | [`questions.py`](open_computer_use/questions.py) | The instructions and the budgets |
 | [`demo.py`](open_computer_use/demo.py) | The local inspector |
+| [`cua.py`](open_computer_use/cua.py) | Codex Computer Use's tree text, read as the same element table |
+| [`decide.py`](open_computer_use/decide.py) | One decision per line, for an executor in another process |
+| [`runtime/loop.mjs`](runtime/loop.mjs) | The executor half, inside Codex's JavaScript runtime |
 
 `scripts/build.sh` compiles the bridge with `swiftc` and no dependencies.
 
