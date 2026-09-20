@@ -95,6 +95,39 @@ def post_json(url, key, body):
     raise RuntimeError("Model unavailable")
 
 
+def icons(candidates, gap=16):
+    """Paths of icons that only repeat the label sitting next to them.
+
+    A sidebar entry is an icon and a word, and the tree publishes both, so the
+    table offered "搜索" twice — once as the picture, once as the text. The
+    model split its answer between them: 0.30 on one and 0.16 on the other for
+    a single control, against a runner-up on 0.25. Nothing was wrong with
+    either choice and the pair still lost.
+
+    Only a picture that shares a line and a name with its own caption is
+    dropped. Three elements reading 陈奕迅 in the same window are three
+    different songs, sitting in three different places, and merging by name
+    alone would take two of them away. So the test is geometric: same label,
+    overlapping vertical band, horizontally within `gap` points.
+    """
+    text = [c for c in candidates if c["role"] == "AXStaticText" and c["label"]]
+    out = set()
+    for candidate in candidates:
+        if candidate["role"] != "AXImage" or not candidate["label"]:
+            continue
+        x, y, w, h = candidate["frame"]
+        for other in text:
+            if other["label"] != candidate["label"]:
+                continue
+            ox, oy, ow, oh = other["frame"]
+            same_line = y < oy + oh and oy < y + h
+            near = min(abs(ox - (x + w)), abs(x - (ox + ow))) <= gap
+            if same_line and near:
+                out.add(candidate["path"])
+                break
+    return out
+
+
 def scaffolding(candidates):
     """Paths of the unnamed elements that exist only to contain another one.
 
@@ -163,7 +196,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         if [op for op in source["operations"] if op in TARGETED and (pointer or op not in POINTER_OPERATIONS)]
         or source["role"] == "AXTextArea"
     ]
-    wrappers = scaffolding(usable)
+    wrappers = scaffolding(usable) | icons(usable)
 
     elements, targets = [], {}
     for source in usable:
