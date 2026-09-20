@@ -343,7 +343,12 @@ So there is a second path, entered only when a window is sparse by measurement
   The frontmost requirement belongs to how the click is sent, not to macOS:
   keyboard events go to a process and reach a background window, and whether a
   *mouse* event posted the same way can be made to land has not been tested
-  here. Until it is, the pointer stays behind `activate=True`.
+  here. It is not merely possible — Codex's own Computer Use drives a Mac app
+  through a whole task without ever raising it, reported by someone who ran it.
+  That is a report about another implementation rather than a measurement of
+  this one, and it is the reason the experiment is worth doing rather than
+  evidence that it will work. Until it is done, the pointer stays behind
+  `activate=True`.
 - It **sends your screen to the model.** The whole window, whatever is in it.
 - It **cannot be verified by the tree.** These windows' fingerprints barely
   move whatever happens inside them, so captures carry a 16×16 greyscale
