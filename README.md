@@ -625,4 +625,6 @@ either way, since Jev takes text only.
 
 The accessibility helpers follow `cu`, a macOS accessibility CLI, MIT.
 
-MIT.
+## License
+
+[MIT](LICENSE) © 2026 MAX LIN. Portions derived from jev-ultrafast are © 2026 Browser Use, also MIT.
