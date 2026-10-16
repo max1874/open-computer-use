@@ -130,8 +130,10 @@ the operation and its probability distribution, the risk rating, and every
 operation that actually ran. **Step** decides and executes one at a time.
 
 Grant **Accessibility** to the terminal running this (System Settings > Privacy
-& Security > Accessibility). Nothing here needs Screen Recording, because
-nothing here takes a screenshot.
+& Security > Accessibility). Screen Recording is optional: it is used only
+when a window publishes almost nothing to the accessibility tree, to send the
+model a picture of that window. Without it the run stays tree-only, and
+`pixels=False` keeps it that way even when the permission is granted.
 
 There are two decision backends, and which one answers depends on whether the
 window can be described in text.
