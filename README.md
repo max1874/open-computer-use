@@ -1,5 +1,7 @@
 # open-computer-use ⌘
 
+Open Computer Use is an open-source computer-use agent for macOS that drives apps through the accessibility tree.
+
 **A macOS computer-use agent with interchangeable model backends and a dynamic, indexed action space.**
 
 Run it with an OpenAI-compatible model or the optional Jev backend. The macOS
@@ -591,6 +593,35 @@ Known limits:
   that exists for this is the risk rating and `approve`, which means the guard
   is a model's opinion — worth knowing before running unattended somewhere with
   a file browser open.
+
+## FAQ
+
+**How is this different from screenshot-based computer use?**
+Anthropic's and OpenAI's computer-use tools show the model a screenshot and
+take back a pixel coordinate. Here the model is shown the accessibility tree as
+a numbered table and picks an index, so every target is an element that was
+observed, and it is checked again before anything runs. A picture is taken only
+for a window that measures as sparse — see "When the window says nothing".
+
+**Which models can it use?**
+Any OpenAI-compatible chat endpoint, and Jev as an optional decision backend.
+Jev takes text only, so the screenshot fallback and `TYPE_TEXT` values still go
+to the chat model. Extended thinking has to be off; see "Known limits".
+
+**What leaves the Mac?**
+Each decision sends the goal, the app name, the window title, the window's
+visible text, the element table — field contents included — the menu command
+names and the last ten actions to the endpoint you configured. A sparse window
+also sends a picture of the whole window, if Screen Recording is granted;
+`pixels=False` keeps a run tree-only. Nothing else in the package calls out.
+
+**Which apps can it drive?**
+The focused window of one app, as far as that window publishes an accessibility
+tree: native apps, and Electron and Chromium windows once the walk goes deep
+enough (Lark: 174 actionable elements). Drag, key combinations, paste, text
+selection and canvases are out of reach.
+
+More, in English and Chinese: [max1874.com/open-computer-use](https://max1874.com/open-computer-use/)
 
 ## Small enough to read
 
