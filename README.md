@@ -2,6 +2,10 @@
 
 Open Computer Use is an open-source computer-use agent for macOS that drives apps through the accessibility tree.
 
+<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="The agent presses numbered elements in a Calculator left in the background to compute 12 × 34"></a>
+
+<sub>A recorded demo from [max1874.com/open-computer-use](https://max1874.com/open-computer-use/), where you can try it yourself.</sub>
+
 **A macOS computer-use agent with interchangeable model backends and a dynamic, indexed action space.**
 
 Run it with an OpenAI-compatible model or the optional Jev backend. The macOS
