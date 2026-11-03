@@ -801,7 +801,8 @@ def field_text(context):
             "response_format": {"type": "json_object"},
             **reasoning_body(base, model),
             "messages": [
-                {"role": "system", "content": TEXT_VALUE + ' Reply as {"text": "..."} or {"text": null}.'},
+                # DeepSeek's own API refuses json_object unless the prompt says "json".
+                {"role": "system", "content": TEXT_VALUE + ' Reply with the JSON object {"text": "..."} or {"text": null}.'},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
             ],
         },

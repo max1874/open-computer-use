@@ -8,3 +8,4 @@ build/
 recordings/
 traces/
 .DS_Store
+evals/results/
