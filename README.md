@@ -335,6 +335,13 @@ A static text's name is its value, which is its own small correction: every
 other role answers to a title, a description or a label element, and reading
 this one the same way returned an entire window's contents as anonymous.
 
+An editable or actionable element with no name from any of those sources falls
+back to the app's role description. Dictionary's unnamed search field becomes
+"search text field"; Finder's filename fields become "text field", with
+"Reports" or "Notes" still carried separately as their value in the model's
+element table. A field's contents do not become its name, and an existing name
+is never replaced by this fallback.
+
 ## When the window says nothing
 
 Far fewer windows than this project first claimed. An earlier version of this
