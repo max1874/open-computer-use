@@ -283,6 +283,10 @@ func label(of element: AXUIElement, role: String) -> String {
     }
     // Static text is named from its value, by the walker.
     if role == kAXStaticTextRole { return "" }
+    // A row's name field is named by what it holds: Finder's "Notes", not "text field".
+    if editableRoles.contains(role), enclosingRow(element) != nil {
+        return string(element, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     let spoken = containedText(element)
     if !spoken.isEmpty { return spoken }
     // Last resort for something the model has to tell apart from its
@@ -344,14 +348,17 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     var out: [String] = []
     let available = Set(actionNames(element))
     if available.contains(kAXPressAction) { out.append("PRESS") }
-    if editableRoles.contains(role), settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
+    // A text field in a row is the item's name, and Finder's are settable:
+    // typing there renames the file. The row is offered to click instead.
+    let rowName = editableRoles.contains(role) && enclosingRow(element) != nil
+    if editableRoles.contains(role), !rowName, settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
     if role == kAXPopUpButtonRole || role == "AXMenuButton" { out.append("SELECT") }
     if available.contains(kAXIncrementAction) { out.append("INCREMENT") }
     if available.contains(kAXDecrementAction) { out.append("DECREMENT") }
     // Only where the accessibility API offers nothing. CLICK is aimed at a
     // rectangle rather than addressed to an element, so it is the weaker way to
     // reach anything that can also be pressed.
-    if out.isEmpty, named, clickableContentRoles.contains(role) { out.append("CLICK") }
+    if out.isEmpty, named, clickableContentRoles.contains(role) || rowName { out.append("CLICK") }
     // AXShowMenu is deliberately not offered. It works, but showing a menu
     // requires macOS to activate the app, so the one operation that opens a
     // context menu without aiming a right-click also takes the screen — and
@@ -360,29 +367,33 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     return out
 }
 
-/// Selecting a containing row is the native equivalent of a single click.
-/// Stop at the nearest row: an outer row would select a different target.
-func backgroundClickTarget(_ element: AXUIElement) -> (element: AXUIElement, attribute: String, value: CFTypeRef)? {
+/// The nearest row at or above an element, within the window.
+func enclosingRow(_ element: AXUIElement) -> AXUIElement? {
     var node = element
     for _ in 0..<16 {
         let role = string(node, kAXRoleAttribute)
-        if role == kAXRowRole {
-            if settable(node, kAXSelectedAttribute) {
-                return (node, kAXSelectedAttribute, kCFBooleanTrue)
-            }
-            if let parent = attr(node, kAXParentAttribute) {
-                let container = parent as! AXUIElement
-                let containerRole = string(container, kAXRoleAttribute)
-                if (containerRole == kAXOutlineRole || containerRole == kAXTableRole),
-                    settable(container, kAXSelectedRowsAttribute) {
-                    return (container, kAXSelectedRowsAttribute, [node] as CFArray)
-                }
-            }
-            return nil
-        }
+        if role == kAXRowRole { return node }
         if role == kAXWindowRole || role == kAXApplicationRole { return nil }
         guard let parent = attr(node, kAXParentAttribute) else { return nil }
         node = parent as! AXUIElement
+    }
+    return nil
+}
+
+/// Selecting a containing row is the native equivalent of a single click.
+/// Stop at the nearest row: an outer row would select a different target.
+func backgroundClickTarget(_ element: AXUIElement) -> (element: AXUIElement, attribute: String, value: CFTypeRef)? {
+    guard let row = enclosingRow(element) else { return nil }
+    if settable(row, kAXSelectedAttribute) {
+        return (row, kAXSelectedAttribute, kCFBooleanTrue)
+    }
+    if let parent = attr(row, kAXParentAttribute) {
+        let container = parent as! AXUIElement
+        let containerRole = string(container, kAXRoleAttribute)
+        if (containerRole == kAXOutlineRole || containerRole == kAXTableRole),
+            settable(container, kAXSelectedRowsAttribute) {
+            return (container, kAXSelectedRowsAttribute, [row] as CFArray)
+        }
     }
     return nil
 }

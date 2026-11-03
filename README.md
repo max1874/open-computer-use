@@ -92,6 +92,12 @@ to be wrong in a task that needs neither, and on "compute 12 times 34" against
 was byte-for-byte identical in both; the only difference was the size of the
 choice. An operation that is free to implement is not free to offer.
 
+`TYPE_TEXT` is not offered on a text field inside a row. In Finder's list view
+each file's name is a settable `AXTextField`, so typing there renames the file;
+an eval run pressed Return and typed into one, and was saved only because it
+typed the name the folder already had. Such a field is offered as `CLICK`,
+named by its value ("Notes", not "text field"), which selects the row.
+
 Every target head is answered on the same observed state, and only the head
 matching the chosen operation can execute. Two decisions, one round trip —
 [jev-ultrafast's speculative fan-out](https://docs.typesafe.ai/patterns/fan-out),

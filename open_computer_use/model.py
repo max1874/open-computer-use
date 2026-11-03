@@ -215,7 +215,10 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         # Every operation on it has just been refused, so it is not a choice.
         if not operations and source["role"] != "AXTextArea":
             continue
-        index = source["index"]
+        # Never a bare number: a choice keyed "15" and named "2" is read as the
+        # digit. On Calculator, where key "2" is Delete, every 2 in a sum
+        # pressed Delete (eval 2026-11-03).
+        index = "e" + source["index"]
         shown = {"index": index, "role": source["role"].removeprefix("AX")}
         # No invented label. Writing the role into the label field turned a
         # hundred anonymous containers into a hundred elements all called
@@ -238,7 +241,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         for operation in operations:
             if operation == "SELECT":
                 for position, option in enumerate(source.get("options", [])):
-                    targets.setdefault("SELECT", {})[option["index"]] = {
+                    targets.setdefault("SELECT", {})["e" + option["index"]] = {
                         "operation": "SELECT",
                         "op": "SELECT",
                         "path": source["path"],
