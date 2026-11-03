@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Same limit as questions.py: a third identical decision on a returning window is a loop.
+const MAX_DECISION_REPEATS = 3;
 
 // The app's own schedule, not ours. The host already waits for the interface
 // to settle after an action, so this is only for the operation it cannot see.
@@ -98,6 +100,7 @@ export async function runTask({
   if (!sky) throw new Error("runTask needs the host's `sky`");
   const ask = decider({ python, env });
   const history = [];
+  const executed = new Map();
   let refused = [];
   try {
     for (let step = 1; step <= maxSteps; step++) {
@@ -124,6 +127,8 @@ export async function runTask({
       }
       if (dryRun) return finish("dry_run", { step, decision });
 
+      // Full tree text is this executor's fingerprint; indices address its targets.
+      const key = JSON.stringify([state.text, decision.operation, decision.index ?? null]);
       // Recorded before it is performed, so an observation that arrives after
       // a change cannot erase the operation that caused it.
       const record = {
@@ -133,6 +138,13 @@ export async function runTask({
         window_changed: null,
       };
       history.push(record);
+      if (decision.operation !== "WAIT" && (executed.get(key) ?? 0) >= MAX_DECISION_REPEATS - 1) {
+        const note = `Stopped before running ${decision.operation} on ${JSON.stringify(decision.label || decision.operation)} `
+          + `again: it already ran ${MAX_DECISION_REPEATS - 1} times on this same window state.`;
+        Object.assign(record, { outcome: "not attempted", detail: note, window_changed: false });
+        return finish("blocked", { step, decision, note, message: note });
+      }
+
       try {
         await perform(sky, app, decision);
       } catch (error) {
@@ -144,6 +156,7 @@ export async function runTask({
         emit(`      refused: ${error.message}`);
         continue;
       }
+      if (decision.operation !== "WAIT") executed.set(key, (executed.get(key) ?? 0) + 1);
       const after = await sky.get_app_state({ app, disableDiff: true });
       record.window_changed = after.text !== state.text;
       if (record.window_changed) refused = [];

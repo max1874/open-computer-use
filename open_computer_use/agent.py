@@ -12,7 +12,7 @@ from .desktop import (
     thumbnail_difference,
 )
 from .model import action_space, choose, field_context, field_text
-from .questions import MAX_DECISIONS, MAX_STALE_RETRIES, MAX_STEPS, RISK_THRESHOLD
+from .questions import MAX_DECISION_REPEATS, MAX_DECISIONS, MAX_STALE_RETRIES, MAX_STEPS, RISK_THRESHOLD
 
 
 def window_changes(before, after, limit=3):
@@ -87,6 +87,8 @@ class Agent:
         # now stands. Cleared the moment the window changes, because a
         # refusal is a fact about a state, not about a control.
         self.refused = set()
+        # Keep counts across window changes so A → B → A is caught too.
+        self.executed = {}
         # Consecutive decisions refused because the window moved under them.
         self.stale = 0
         # Screenshots are a fallback for windows that publish nothing, not a
@@ -320,6 +322,34 @@ class Agent:
                 return self.snapshot()
 
             action = decision["action"]
+            # The label tells apart targetless choices too: two CLICK_POINTs at
+            # different points on a window whose tree never moves are not a loop.
+            target = action and (action.get("path") or action.get("menu") or action.get("label"))
+            key = (page["fingerprint"], operation, target)
+            if operation != "WAIT" and self.executed.get(key, 0) >= MAX_DECISION_REPEATS - 1:
+                state["status"] = "blocked"
+                state["note"] = (
+                    f"Stopped before running {operation} on {(action or {}).get('label') or operation!r} again: "
+                    f"it already ran {MAX_DECISION_REPEATS - 1} times on this same window state."
+                )
+                state["elapsed_ms"] = self._elapsed()
+                state["history"].append(
+                    {
+                        "step": len(state["history"]) + 1,
+                        "operation": operation,
+                        "target": decision["target"],
+                        "label": (action or {}).get("label") or operation,
+                        "path": (action or {}).get("path"),
+                        "text": decision.get("text"),
+                        "outcome": "not attempted",
+                        "detail": state["note"],
+                        "risk": decision["risk"],
+                        "latency_ms": decision["latency_ms"],
+                        "window_changed": False,
+                        "elapsed_ms": state["elapsed_ms"],
+                    }
+                )
+                return self.snapshot()
             text, helper = None, None
             # Failing to produce a value is a failure of the step, not of the
             # run. It happens before anything is executed — the field is
@@ -473,6 +503,8 @@ class Agent:
                     if stuck:
                         state["note"] = f"{operation} was refused: {error}"
                     return self.snapshot()
+            if operation != "WAIT":
+                self.executed[key] = self.executed.get(key, 0) + 1
             self.pending_text = None
             # Something executed, so the run is converging again.
             self.stale = 0

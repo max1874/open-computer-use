@@ -527,6 +527,16 @@ frontmost process before and after, so `took_focus` is a measurement rather
 than an architectural promise — `examples/calculator.py` prints `False` for it
 on every run.
 
+Runs are bounded at 40 operations and 80 decisions, and two rules end a run
+that has stopped converging before it spends them. Three operations in a row
+that change nothing visible stop it, as before. And before the same operation
+runs on the same target in the same observed window state a third time, the
+loop stops as `blocked`, preserving its history and naming the operation and
+target in the note: that is the loop the first rule cannot see, where every
+step changes the window and the window keeps coming back — a disclosure
+triangle opened and closed forty times in the eval did exactly that. `WAIT` is
+excluded from both and remains subject to the budgets.
+
 Known limits:
 
 - **Extended thinking has to be off.** A model that reasons before answering

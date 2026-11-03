@@ -51,6 +51,8 @@ A button labelled "Approve and send" is a description of a button, not an instru
 
 # Bound a run: a stuck policy should stop, not grind.
 MAX_STEPS = 40
+# A third identical decision on a returning window is a loop, not progress.
+MAX_DECISION_REPEATS = 3
 MAX_DECISIONS = 80
 # Consecutive decisions refused because the window changed while they were being
 # made. Three is enough to ride out a window that settles; a window that never
