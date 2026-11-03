@@ -219,6 +219,8 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         # "Group", which reads as a table of real choices and is not one.
         if source["label"]:
             shown["label"] = source["label"]
+        if source.get("secure"):
+            shown["secure"] = True
         shown["operations"] = operations
         name = source["label"] or source["role"].removeprefix("AX")
         for key in ("value", "checked", "selected"):
@@ -232,6 +234,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         # is the strongest of these and the label the weakest, so all three go.
         expect = source["label"] or source["role"]
         identity = {"expect": expect, "expect_role": source["role"], "expect_id": source.get("identifier", "")}
+        identity["secure"] = bool(source.get("secure"))
         for operation in operations:
             if operation == "SELECT":
                 for position, option in enumerate(source.get("options", [])):
@@ -635,8 +638,9 @@ def past_action(step):
     that row is to try the same control again.
     """
     row = {k: step.get(k) for k in ("operation", "label", "text", "window_changed")}
-    if step.get("outcome"):
-        row["outcome"] = step["outcome"]
+    for key in ("outcome", "disposition", "secure"):
+        if step.get(key):
+            row[key] = step[key]
     return row
 
 

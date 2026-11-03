@@ -64,6 +64,23 @@ Execution is recorded before the result is observed, so a stale post-action
 observation cannot erase an operation that actually ran. Nothing is retried: a
 press that may have landed is never sent twice.
 
+Delivery evidence travels with both results and exceptions as `disposition`.
+Only a refusal before dispatch is safe to retry; missing replies are uncertain,
+while an API success without a value or checkbox-state read-back is delivered
+but unverified. Window changes are progress evidence, not proof that a
+particular action worked. The final goal still needs the caller's outcome check.
+
+The helper uses separate AX read/write timeouts. A timed-out read invalidates
+that observation. A transport failure discards the helper under the same lock
+that owns request/reply exchange, so no late reply can belong to a later call.
+The next request creates a new helper without replaying the old request.
+
+Secure text fields are identified by role, subrole or protected-content state.
+Value redaction happens before any observation, label or diagnostic can read
+it, and traversal stops at that field. Targets carry their observed secure state;
+a change in that state refuses execution. Secure writes skip value read-back,
+and their input is left out of public decisions and history.
+
 ## Focus
 
 Everything except the menu bar works on a window that is not in front. Reading
