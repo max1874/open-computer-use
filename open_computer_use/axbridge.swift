@@ -360,6 +360,52 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     return out
 }
 
+/// Selecting a containing row is the native equivalent of a single click.
+/// Stop at the nearest row: an outer row would select a different target.
+func backgroundClickTarget(_ element: AXUIElement) -> (element: AXUIElement, attribute: String, value: CFTypeRef)? {
+    var node = element
+    for _ in 0..<16 {
+        let role = string(node, kAXRoleAttribute)
+        if role == kAXRowRole {
+            if settable(node, kAXSelectedAttribute) {
+                return (node, kAXSelectedAttribute, kCFBooleanTrue)
+            }
+            if let parent = attr(node, kAXParentAttribute) {
+                let container = parent as! AXUIElement
+                let containerRole = string(container, kAXRoleAttribute)
+                if (containerRole == kAXOutlineRole || containerRole == kAXTableRole),
+                    settable(container, kAXSelectedRowsAttribute) {
+                    return (container, kAXSelectedRowsAttribute, [node] as CFArray)
+                }
+            }
+            return nil
+        }
+        if role == kAXWindowRole || role == kAXApplicationRole { return nil }
+        guard let parent = attr(node, kAXParentAttribute) else { return nil }
+        node = parent as! AXUIElement
+    }
+    return nil
+}
+
+/// Resolve only observed CLICK targets, sharing child reads across their paths.
+/// Large lists can contain over a thousand titles under the same ancestors.
+func backgroundClickIndices(_ snap: Snapshot) -> [String] {
+    let root = AXUIElementCreateApplication(snap.pid)
+    var branches: [String: [AXUIElement]] = [:]
+    return snap.elements.filter { item in
+        guard item.operations.contains("CLICK") else { return false }
+        var node = root, prefix = ""
+        for part in item.path.split(separator: ".") {
+            let pool = branches[prefix] ?? children(node)
+            branches[prefix] = pool
+            guard let index = Int(part), pool.indices.contains(index) else { return false }
+            node = pool[index]
+            prefix += prefix.isEmpty ? String(part) : ".\(part)"
+        }
+        return backgroundClickTarget(node) != nil
+    }.map { $0.index }
+}
+
 struct Snapshot {
     var app: String
     var pid: pid_t
@@ -617,6 +663,7 @@ func snapshotJSON(_ snap: Snapshot) -> [String: Any] {
             Int(snap.windowFrame.width), Int(snap.windowFrame.height),
         ],
         "elements": snap.elements.map { $0.json },
+        "background_clicks": backgroundClickIndices(snap),
         "menus": snap.menus,
         "active": snap.active,
         "text": snap.text,
@@ -1164,7 +1211,20 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
         guard result == .success else { throw BridgeError(message: "press failed: \(describe(result))") }
         return ["ok": true, "detail": current, "mechanism": "AXPress"].merging(focusFacts(focusBefore, app)) { a, _ in a }
-    case "CLICK":
+    case "CLICK", "CLICK_BACKGROUND":
+        // CLICK_BACKGROUND is an executor permission, not another model
+        // operation. Never fall back to the pointer if this capability vanished.
+        if op == "CLICK_BACKGROUND" {
+            guard let target = backgroundClickTarget(element) else {
+                throw BridgeError(message: "refused: \(current) has no background click delivery")
+            }
+            let result = AXUIElementSetAttributeValue(target.element, target.attribute as CFString, target.value)
+            guard result == .success else {
+                throw BridgeError(message: "background click failed: \(describe(result))")
+            }
+            return ["ok": true, "detail": current, "mechanism": target.attribute]
+                .merging(focusFacts(focusBefore, app)) { a, _ in a }
+        }
         // For elements the accessibility API will not act on. A song in Music
         // is a static text: it has a name, a rectangle and no AXPress, and
         // until this existed there was no way to choose one. The click is aimed

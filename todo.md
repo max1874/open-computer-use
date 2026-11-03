@@ -6,15 +6,23 @@ cost. Nothing here is scheduled.
 
 ## Would remove a real constraint
 
-**Deliver a click without taking the screen.** The pixel path needs the app in
-front, and that is the one thing a user notices. What is implemented needs
-activation; whether a *click* fundamentally needs it has never been tested. Key
-events are already posted to the pid and land on a background window. The same
-has never been tried with a mouse event, and if it works the `activate`
-requirement on the pixel path goes away. One experiment: post a
-`.leftMouseDown`/`.leftMouseUp` pair to a pid, on a window that is behind
-another, and read the window back. Cheap, and it either removes the constraint
-or turns an untested sentence in the README into a measured one.
+**Deliver an arbitrary click without taking the screen.** Native row selection
+now delivers indexed `CLICK` in the background where the element's nearest row
+supports it. Measured on System Settings behind other windows: both
+`AXRow.AXSelected = true` and `AXOutline.AXSelectedRows = [row]` navigate from
+General to Wi-Fi and Appearance, with no FocusWatch events. Targets without that
+capability are still hidden without pointer permission; native delivery never
+falls back to HID. Finder's measured file-list names are `TYPE_TEXT`, not
+`CLICK`-only; row selection leaves the folder unopened, and an advertised
+`AXOpen` on its filename returned `-25205` while the observed window stayed on
+the containing folder.
+
+The mouse-event experiment did not remove the pixel path's constraint:
+`.leftMouseDown`/`.leftMouseUp` posted to System Settings' pid at each sidebar
+target left General unchanged, with no focus events and identical pointer
+positions. No process-targeted mouse delivery is offered. `CLICK_POINT` and
+pointer-only `CLICK` retain their foreground and occlusion guards. A different
+background mouse mechanism would need its own measurement before changing that.
 
 **Read a menu after it opens.** Blocks two things at once: `AXShowMenu` is kept
 out of the action space, and `SELECT` has never been offered — 40 pop-up and
