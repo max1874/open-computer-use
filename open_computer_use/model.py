@@ -167,9 +167,8 @@ def scaffolding(candidates):
     return drop
 
 
-# CLICK is addressed to an element, like PRESS, but delivered with the pointer,
-# like CLICK_POINT: the app has to be in front. So it sits on the `pointer`
-# permission rather than being offered whenever the element exists.
+# CLICK needs pointer permission unless the bridge reports a native delivery
+# for this observed element. Pixel clicks always keep their existing guards.
 POINTER_OPERATIONS = {"CLICK"}
 
 
@@ -189,11 +188,15 @@ def action_space(page, pixels=False, refused=(), pointer=False):
     to act on that is the table, not the prompt.
     """
     refused = set(refused)
+    background_clicks = set(page.get("background_clicks", []))
     usable = [
         source
         for source in page["elements"]
         # An element with no usable operation is context, not a choice.
-        if [op for op in source["operations"] if op in TARGETED and (pointer or op not in POINTER_OPERATIONS)]
+        if any(
+            op in TARGETED and (pointer or op not in POINTER_OPERATIONS or source["index"] in background_clicks)
+            for op in source["operations"]
+        )
         or source["role"] == "AXTextArea"
     ]
     wrappers = scaffolding(usable) | icons(usable)
@@ -207,7 +210,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             for op in source["operations"]
             if op in TARGETED
             and (op, source["path"]) not in refused
-            and (pointer or op not in POINTER_OPERATIONS)
+            and (pointer or op not in POINTER_OPERATIONS or source["index"] in background_clicks)
         ]
         # Every operation on it has just been refused, so it is not a choice.
         if not operations and source["role"] != "AXTextArea":
@@ -250,7 +253,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             else:
                 targets.setdefault(operation, {})[index] = {
                     "operation": operation,
-                    "op": operation,
+                    "op": "CLICK_BACKGROUND" if operation == "CLICK" and not pointer else operation,
                     "path": source["path"],
                     **identity,
                     "label": name,

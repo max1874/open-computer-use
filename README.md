@@ -55,9 +55,12 @@ accessibility tree → │ operation                    │
 Operations: `PRESS`, `TYPE_TEXT`, `SELECT`, `MENU`, `CLICK`, `SCROLL_UP`,
 `SCROLL_DOWN`, `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
 
-`CLICK` is the odd one. It is addressed to an element out of the same table as
-`PRESS`, and delivered with the pointer like the screenshot operations, so it
-needs the app in front and is offered only with `activate`. It exists because
+`CLICK` is addressed to an element out of the same table as `PRESS`. When its
+nearest row exposes native selection, it selects that row without taking focus
+or moving the pointer. This navigates System Settings' Wi-Fi and Appearance
+sidebar entries in the background. Other targets use the real pointer and are
+offered only with `activate`, with the same foreground and occlusion guards as
+the screenshot operations. It exists because
 an element the app will not act on is still a place on the screen: a song in
 Music is an `AXStaticText` inside an anonymous cell inside an anonymous row,
 and not one of the three implements `AXPress`. Offering only what publishes an
@@ -318,15 +321,17 @@ all — so a run that needed a particular song had a table with plenty in it and
 nothing to aim at. The sparseness test called that window rich, which it was,
 and not addressable, which it could not see.
 
-So elements that carry content are now offered too, with `CLICK`, which aims
-at the middle of the element's own rectangle. Three things keep it honest:
+So elements that carry content are now offered too, with `CLICK`, which selects
+their containing row when native selection is available, or aims at the middle
+of the element's own rectangle with pointer permission. Three things keep it honest:
 
 - **It is last.** Any element that answers to the accessibility API is reached
   that way; `CLICK` appears only where nothing else can.
-- **It costs the screen.** Delivery is a real pointer event, so the app must be
-  in front, which makes it `activate`-only — the same permission as the
-  screenshot operations, and for the same reason. Without `activate`, Music
-  reads as 71 tree-only elements and nothing takes the screen.
+- **Background delivery is per element.** The bridge reports which observed
+  targets have a settable row selection. Only those are offered without
+  `activate`; a missing or refused native selection never falls back to the
+  pointer. Pointer delivery still requires the app in front and the target
+  uncovered, just like the screenshot operations.
 - **Content and controls have separate budgets.** A shared limit is spent by
   four thousand song titles before the walk reaches the toolbar, and the table
   then looks full while the app's actual controls have fallen off the end.
@@ -398,15 +403,12 @@ So there is a second path, entered only when a window is sparse by measurement
   one cursor. The two were one flag, and the cost of that was a window whose
   tree says nothing could not be looked at without being raised.
 
-  The frontmost requirement belongs to how the click is sent, not to macOS:
-  keyboard events go to a process and reach a background window, and whether a
-  *mouse* event posted the same way can be made to land has not been tested
-  here. It is not merely possible — Codex's own Computer Use drives a Mac app
-  through a whole task without ever raising it, reported by someone who ran it.
-  That is a report about another implementation rather than a measurement of
-  this one, and it is the reason the experiment is worth doing rather than
-  evidence that it will work. Until it is done, the pointer stays behind
-  `activate=True`.
+  Process-targeted mouse events were tested on System Settings behind other
+  windows: a `leftMouseDown`/`leftMouseUp` pair posted to its pid at Wi-Fi and
+  Appearance did not navigate either pane. Native row selection did, without
+  focus events. That gives indexed `CLICK` a background delivery on those
+  elements, but does not give a screenshot point one; `CLICK_POINT` still
+  requires `activate=True`.
 - It **sends your screen to the model.** The whole window, whatever is in it.
 - It **cannot be verified by the tree.** These windows' fingerprints barely
   move whatever happens inside them, so captures carry a 16×16 greyscale
@@ -528,6 +530,15 @@ than an architectural promise — `examples/calculator.py` prints `False` for it
 on every run.
 
 Known limits:
+
+- **Background `CLICK` selects a row, not an arbitrary point.** Both setting
+  `AXSelected` on a row and `AXSelectedRows` on its outline navigated System
+  Settings to Wi-Fi and Appearance. Its ordinary pane headings have neither
+  capability and remain unavailable without `activate`. Finder's measured
+  file-list names offer `TYPE_TEXT`, not `CLICK`; selecting their row does not
+  open the folder. Their text fields advertise `AXOpen`, but the measured call
+  returned error `-25205` and the observed window stayed on the containing
+  folder. No general background mouse delivery is implemented.
 
 - **Extended thinking has to be off.** A model that reasons before answering
   spends its output budget doing it: a `deepseek-flash` answer measured here
