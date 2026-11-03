@@ -281,9 +281,14 @@ func label(of element: AXUIElement, role: String) -> String {
             return text
         }
     }
-    if role != kAXStaticTextRole {
-        let spoken = containedText(element)
-        if !spoken.isEmpty { return spoken }
+    // Static text is named from its value, by the walker.
+    if role == kAXStaticTextRole { return "" }
+    let spoken = containedText(element)
+    if !spoken.isEmpty { return spoken }
+    // Last resort for something the model has to tell apart from its
+    // neighbours: what the app calls the role ("search text field").
+    if editableRoles.contains(role) || !operations(for: element, role: role, enabled: true).isEmpty {
+        return string(element, kAXRoleDescriptionAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     return ""
 }
