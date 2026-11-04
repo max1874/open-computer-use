@@ -74,27 +74,11 @@ function renderDecision(state) {
     return;
   }
   box.className = "decision";
-  const probabilities = decision.probabilities || {};
-  const entries = Object.entries(probabilities).sort((a, b) => b[1] - a[1]);
-  const top = entries.length ? entries[0][0] : null;
-  const bars = entries.length
-    ? `<div class="bars">${entries
-        .map(
-          ([name, value]) => `<div class="bar ${name === top ? "top" : ""}">
-            <span>${escape(name)}</span>
-            <span class="track"><span class="fill" style="width:${(value * 100).toFixed(1)}%"></span></span>
-            <span class="pct">${(value * 100).toFixed(0)}%</span>
-          </div>`
-        )
-        .join("")}</div>`
-    : `<div class="hint">This provider returned no logprobs, so there is no distribution to show.</div>`;
-
   const held = state.status === "needs_approval";
   box.innerHTML = `
     <div class="chosen-op">${escape(decision.operation)}
       <small>${escape(decision.label || "no target")}${decision.text ? ` — “${escape(decision.text)}”` : ""}</small>
     </div>
-    ${bars}
     <div class="meta">
       <span>confidence ${(decision.confidence * 100).toFixed(0)}%</span>
       <span>${decision.latency_ms} ms</span>
@@ -145,7 +129,6 @@ $("start").onclick = async () => {
     await api("/api/start", {
       app: $("app").value.trim() || "TextEdit",
       goal: $("goal").value.trim(),
-      activate: $("activate").checked,
     })
   );
 };

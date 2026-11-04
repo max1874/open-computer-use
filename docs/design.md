@@ -1,201 +1,41 @@
-# Dynamic operation + target, on the accessibility tree
+# One background execution path
 
-The input is one natural-language goal and one app. Every observation builds an
-indexed table of the elements that app currently exposes, together with the
-operations each one actually supports. One node gets one index even when it can
-be both pressed and typed into.
+The essential variables are the requested result in the target app and zero foreground-focus theft throughout that task. The input is one app and one natural-language goal:
 
-One request asks which operation to perform, and which target each available
-operation would use. The executor consumes only the head matching the selected
-operation, so a target that is incompatible with the operation cannot run. The
-value for `TYPE_TEXT` is speculated in the same request; a decision backend
-that can only choose falls back to a second, small text model.
+```text
+native observation → indexed operation/target choices → one guarded execution → native read-back
+```
 
-Operation and target questions receive the same next-step rules. A target
-question cannot read the operation answer, so its premise names the operation
-it assumes.
+`actions.py` owns the pure table and answer schema. `model.py` asks an OpenAI-compatible chat backend or Jev and validates its choice against that table. `Agent` owns prediction, risk approval and execution; public commands publish one snapshot. One history method owns identity and input redaction, and one observation method invalidates refusals when the window changes.
 
-The Python boundaries follow that loop. `actions.py` owns the pure action table
-and answer schema, `model.py` owns provider requests and answer interpretation,
-and `Agent` coordinates prediction and execution. Public commands publish a
-snapshot once; one record method owns history identity and input redaction.
-All later observations update the run through one method, which invalidates
-refusals when the window changes. The Swift input layer similarly shares one
-pointer dispatcher for event preparation, release and cursor restoration.
+## Delivery boundary
 
-## The snapshot
+The native bridge has no app-activation, mouse-event or screenshot entry point. Retired operations are rejected before dispatch. `CLICK` can only use the captured element's native row-selection capability. A missing capability is a refusal, never permission to use HID. Dragging and inaccessible canvases are outside scope.
 
-`axbridge.swift` walks the app’s accessible windows and open menus and produces, in a single
-traversal: roles, names, values, checked and selected states, enabled state,
-geometry, the operations each element supports, and the visible static text.
-Zero-size elements and elements outside the window's bounds are dropped, so
-offscreen content does not fill the model's context.
+App-local field focus and selection remain necessary for editing. Keyboard events are addressed to the process and restricted to the existing editing operations. Opening popup/menu buttons is withheld because AppKit can activate the app to show the menu. Already-open menus remain observable. Menu-bar commands are offered only when the target is already active; it is never activated to obtain them.
 
-Names come from the title, the description, the label element pointing at the
-control, the placeholder, the help text, or the nearest static text inside it —
-in that order. Standard window controls are named from their subrole, because
-their help text is a paragraph about zooming. This covers common labels; it is
-not the system's full accessible-name algorithm.
+Native actions can themselves affect focus. Endpoint `took_focus` facts are diagnostic samples, not a continuous guarantee. Acceptance observes macOS activation events independently over the entire task, and reads the resulting application state independently of `DONE`. A transient focus steal fails, even if focus returns before the action reply. A focus fact already returned by input must survive a failed post-action observation.
 
-Which operations an element offers is decided by role, not by whether a value
-happens to be settable. Treating every control with a settable value as
-editable misclassifies checkboxes — the same audit finding
-[jev-ultrafast](https://github.com/browser-use/jev-ultrafast) reported for
-`INPUT` elements.
+## Observation and identity
 
-The menu bar is read separately and flattened into `Menu>Item>Subitem` paths.
-It is a second traversal, so it is cached for five seconds and invalidated by
-any executed operation. Services, Open Recent, Share and similar submenus are
-skipped: they are system-wide or history noise, never the goal.
+Snapshots include accessible windows and open menus. Control and content publication budgets are separate from the bounded full-surface identity census. Offscreen and zero-size controls are not offered, but unpublished competitors still count toward uniqueness. Unknown competing names and incomplete enumeration prevent identity proof. A fully enumerated surface with only one node of a role has no competing name to resolve. Optional diagnostic-description failures must not invalidate an already-proven role/ID; unknown editable security subroles still fail closed.
 
-## Identity and freshness
+Each observation holds bounded references bound to PID plus process start time. Role, label and optional identifier must be unique within the same native surface. Execution re-identifies against a fresh census, so reordered child indices cannot silently select another element. Process replacement invalidates the observation.
 
-Each observation owns a bounded set of captured element references and a process
-instance (PID plus start time). A role, label and optional identifier must be
-unique across the entire captured native surface, including unpublished nodes.
-An unread competing name or an incomplete census makes that identity unproven.
-Execution takes a fresh census in the same native surface and re-identifies the
-unique target, so a reordered path can still resolve. Source and destination of
-a drag share that census. A replaced process invalidates the observation.
+AX metadata is batched and cached only for a traversal. Secure classification precedes values and diagnostics; secure descendants are not traversed. Unknown editable subroles are treated as secure. Secure writes skip value read-back and public history excludes their input.
 
-Metadata is batched per node and cached only for that traversal. Value reads
-happen after secure classification. Optional metadata failures stay unknown;
-unknown editable subroles are treated as secure. Do not filter the batch through
-`AXUIElementCopyAttributeNames`: Calculator answers digit descriptions it omits
-from that list. Control and content publication budgets remain separate from
-the depth and node limits of the full identity census.
+Freshness compares semantic state, including values and selection, without geometry. Text generation and accepting `DONE` require a fresh window; individual input guards its target. This scope is a heuristic about unrelated changes, not proof they are irrelevant.
 
-The freshness fingerprint is semantic: window title, plus role, label, value,
-enabled, checked and selected for every element, plus the visible text.
-Geometry is deliberately excluded, so a window that was merely moved or resized
-is still fresh. The check uses the same snapshot material without reading the menu bar.
+## Results and failures
 
-Guards are scoped on purpose. Before a text value is generated and before a
-`DONE` is accepted, the whole window must still be fresh. Before an individual
-press, only the target element must still be the element that was chosen. That
-is a practical heuristic, not proof that an unrelated change was irrelevant.
+Delivery is `not_delivered`, `delivery_uncertain`, `delivered_unverified` or `delivered_verified`. Only proven pre-dispatch refusal is retry-safe. The agent consumes decisions once and records execution before observation; uncertain input stops without replay. Window changes show progress, not causation or final task success. The caller's outcome check decides whether `DONE` is justified.
 
-Execution is recorded before the result is observed, so a stale post-action
-observation cannot erase an operation that actually ran. Nothing is retried: a
-press that may have landed is never sent twice.
+Read and write AX deadlines are separate. A read failure invalidates the observation. Request/reply exchange and helper replacement share one lock; timeout or malformed reply discards the helper so late replies cannot contaminate another request. Permission probes use a fresh process.
 
-Delivery evidence travels with both results and exceptions as `disposition`.
-Only a refusal before dispatch is safe to retry; missing replies are uncertain,
-while an API success without a value or checkbox-state read-back is delivered
-but unverified. Window changes are progress evidence, not proof that a
-particular action worked. The final goal still needs the caller's outcome check.
+## Model and inspector
 
-The helper uses separate AX read/write timeouts. A timed-out read invalidates
-that observation. A transport failure discards the helper under the same lock
-that owns request/reply exchange, so no late reply can belong to a later call.
-The next request creates a new helper without replaying the old request.
+One request chooses the operation, a speculative target for each operation, field values where supported, and risk. Only the matching target head executes. Jev returns choices; its field values use the text helper. Chat returns JSON schema or JSON object output. Both are validated at the same boundary. Token-logprob reconstruction and probability charts are absent.
 
-Secure text fields are identified by role, subrole or protected-content state.
-Value redaction happens before any observation, label or diagnostic can read
-it, and traversal stops at that field. Targets carry their observed secure state;
-a change in that state refuses execution. Secure writes skip value read-back,
-and their input is left out of public decisions and history.
+The inspector displays the table, pending decision, risk and executed history. It binds to loopback, checks Host/Origin, requires a startup token and serializes commands. It has no activation control. Its `DONE` state remains a model claim unless an outcome check supplied evidence.
 
-## Focus
-
-Accessibility actions and value writes can work on a window that is not in
-front. Native row selection also provides background CLICK where supported.
-Pointer operations require explicit activation, foreground ownership and
-uncovered endpoints and paths. Reading
-the tree, pressing by path and setting a value all go through the accessibility
-API, which does not involve the pointer, the keyboard focus or the screen.
-
-The menu bar is the exception. An inactive app does not validate its menus:
-every item comes back disabled, and titles that depend on document state go
-stale. So menu commands are offered only while the app is active, and bringing
-it to the front is opt-in — it is the one thing the user will notice.
-
-Keyboard events, when they are needed at all, are posted to the target process
-rather than to the system, so they do not follow the user's focus.
-
-## The decision request
-
-Everything the model is asked goes in one request: the operation, a target for
-each available operation, the value for `TYPE_TEXT`, and the risk rating. Only
-the head matching the chosen operation can execute, so the rest cost a few
-output tokens and no extra round trip.
-
-A System One backend is asked for that directly: each head is a named question
-answered with a choice and a distribution over the options, and the risk rating
-is a score over three ordered levels rather than a number someone has to write
-down. Nothing is asked to produce JSON, because nothing is asked to produce
-text — which also means it cannot produce a `TYPE_TEXT` value, and that falls
-to `model.field_text`, or be shown a screenshot, which sends the sparse-window
-path to the chat backend instead.
-
-A chat backend is asked for the same thing as one JSON object. Where the
-endpoint can constrain the answer server-side it is asked to. Where it can only
-guarantee valid JSON, the same shape goes in the prompt instead. Neither is
-load-bearing: an operation or target outside the offered choices is refused
-here, and nothing executes.
-
-Extended thinking is turned off where it is on by default. Choosing from an
-enumerated table is not a reasoning task, and a model that thinks first spends
-its output budget doing it — one measured `deepseek-flash` answer was 417
-reasoning tokens against 13 tokens of JSON. On a real action space it is the
-JSON that gets truncated, and the run fails with nothing executed.
-
-Which provider that applies to is read from the model name as well as the base
-URL. It used to be read from the URL alone, which is correct until the same
-model arrives through a gateway: `deepseek-v4.1-flash` served from
-`openrouter.ai` is still DeepSeek, and every run through it failed in exactly
-the way the paragraph above describes, by the one route the check could not
-see.
-
-## The guard
-
-The request that chooses the operation also rates how consequential it is, and
-says what it changes. Above the threshold the operation is held and returned
-instead of executed, and the caller decides.
-
-Putting the rating in the same structured answer is the point: an independent
-safety reviewer is a second model call on the critical path, while one more
-field is free. The cost is independence — the rating is the same model's
-judgement about its own choice, which makes it a gate on obvious harm, not an
-adversarial check.
-
-Element text is data. A button titled "Approve and send" describes a button.
-
-## Boundaries
-
-A run is bounded at 40 executed operations and 80 decisions. At most 250
-elements and 200 menu commands are offered; anything beyond that is truncated
-and cannot be selected. Three consecutive operations that change nothing
-visible end the run as blocked.
-
-The inspector binds to loopback, checks Host and Origin, requires a token
-minted at startup, and serialises commands because they drive a real
-application.
-
-## What is not solved
-
-Multi-app workflows remain out of scope. A run observes one application's
-windows and open menus. Native editable fields support UTF-16 selection,
-Unicode insertion and whitelisted editing keys. Indexed dragging uses observed
-source and destination references; sparse canvases can use screenshot-bound
-points. Both drag forms require foreground pointer delivery.
-
-An arbitrary background mouse click remains unimplemented: posting mouse events
-to a process did not change the measured app. Native row selection works only
-where the app exposes that capability. It never silently falls back to HID.
-
-The pixel fallback captures only a window measured sparse; incomplete identity
-reads cannot justify it. The capture's window identity and dimensions travel
-with the action. Delivery alone does not prove a canvas received the intended
-drag, so acceptance reads its resulting state independently.
-
-A native popup now exposes its open menu in the snapshot and SELECT polls a
-read-back without repeating input. AXShowMenu stays unoffered because opening
-context menus takes focus. A closed popup with no options offers PRESS first.
-
-Menu items whose titles change with document state kept reporting their old
-title for seconds after the state changed, so state-dependent menu commands are
-not reliable.
-
-A valid operation can still be the wrong one. Whether a task succeeded is
-decided by reading the window afterwards, not by the model's `DONE`.
+Budgets remain 40 operations, 80 decisions and three consecutive unchanged actions. No new planner, retry framework or cycle detector is introduced.

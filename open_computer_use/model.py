@@ -14,10 +14,10 @@ import time
 import httpx
 
 from .actions import (
-    PIXEL_CONTROLS, action_space, head_properties, object_format_instructions,
+    action_space, head_properties, object_format_instructions,
     parameter_properties, questions_for, schema_format,
 )
-from .questions import GUARD_CHOICE, GUARD_LEVELS, NEXT_ACTION, TEXT_VALUE
+from .questions import GUARD_CHOICE, GUARD_LEVELS, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=60)
 
@@ -99,73 +99,6 @@ def uses_json_schema(base_url, model=""):
     return not names("deepseek", base_url, model)
 
 
-def operation_distribution(payload, chosen, operations):
-    """Best-effort probabilities over the operation head, from token logprobs.
-
-    Providers that do not return logprobs simply get no distribution; the
-    inspector then shows the model's own confidence instead.
-    """
-    try:
-        tokens = payload["choices"][0]["logprobs"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return {}
-    seen = ""
-    for position, token in enumerate(tokens):
-        seen += token.get("token", "")
-        if not seen.rstrip().endswith('"operation":') and not seen.rstrip().endswith('"operation": "'):
-            continue
-        # The value's first token discriminates between the candidates.
-        for candidate in tokens[position:][:3]:
-            alternatives = candidate.get("top_logprobs") or []
-            if not alternatives:
-                continue
-            weights = {}
-            for alternative in alternatives:
-                piece = alternative["token"].strip().strip('"')
-                if not piece:
-                    continue
-                matches = [name for name in operations if name.startswith(piece)]
-                if not matches:
-                    continue
-                share = math.exp(alternative["logprob"]) / len(matches)
-                for name in matches:
-                    weights[name] = weights.get(name, 0.0) + share
-            total = sum(weights.values())
-            # Every alternative can underflow to zero, which is not a distribution.
-            if chosen in weights and len(weights) > 1 and total > 0:
-                return {name: round(value / total, 4) for name, value in sorted(weights.items())}
-        return {}
-    return {}
-
-
-def user_content(state, capture):
-    """The observed state, with the picture attached when there is one."""
-    text = json.dumps(state, ensure_ascii=False)
-    if not capture:
-        return text
-    return [
-        {"type": "text", "text": text},
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:{capture['media_type']};base64,{capture['image']}"},
-        },
-    ]
-
-
-def number(value):
-    """A finite number, whether it arrived as one or as a string of one."""
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, str):
-        try:
-            value = float(value.strip())
-        except ValueError:
-            return None
-    if not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return float(value)
-
-
 def jev_questions(operations, targets):
     """The same heads, as named questions instead of fields of one JSON object.
 
@@ -210,9 +143,7 @@ def ask_jev(state, operations, targets):
     """The System One backend: every head answered with a choice and a distribution.
 
     Nothing here asks for JSON, because nothing here asks for writing. The
-    probabilities come back measured rather than reconstructed from token
-    logprobs, and the risk rating lands between its levels on its own instead
-    of a model picking a round number.
+    risk rating lands between its levels instead of a model picking a round number.
 
     It takes text only, so the pixel path is not routed here — see `choose`.
     """
@@ -249,14 +180,13 @@ def ask_jev(state, operations, targets):
     answer["risk_reason"] = jev_reason(rating)
     return {
         "answer": answer,
-        "probabilities": picked.get("probabilities") or {},
         "model": payload.get("model", body["model"]),
         "usage": payload.get("usage", {}),
         "latency_ms": latency,
     }
 
 
-def ask_chat(state, operations, targets, capture):
+def ask_chat(state, operations, targets):
     """The OpenAI-compatible backend: one JSON object carrying every head."""
     base = os.environ.get("DECISION_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     key = os.environ.get("DECISION_API_KEY")
@@ -270,13 +200,11 @@ def ask_chat(state, operations, targets, capture):
         "model": model,
         "temperature": 0,
         "max_tokens": 700,
-        "logprobs": True,
-        "top_logprobs": 8,
         "response_format": schema_format(properties) if strict else {"type": "json_object"},
         **reasoning_body(base, model),
         "messages": [
             {"role": "system", "content": instructions},
-            {"role": "user", "content": user_content(state, capture)},
+            {"role": "user", "content": json.dumps(state, ensure_ascii=False)},
         ],
     }
     started = time.perf_counter()
@@ -288,7 +216,6 @@ def ask_chat(state, operations, targets, capture):
         raise ValueError("The decision model returned no parseable answer; no operation executed.") from None
     return {
         "answer": answer,
-        "probabilities": operation_distribution(payload, answer.get("operation"), operations),
         "model": payload.get("model", body["model"]),
         "usage": payload.get("usage", {}),
         "latency_ms": latency,
@@ -310,24 +237,9 @@ def past_action(step):
     return row
 
 
-def choose(page, goal, history, capture=None, pointer=False, refused=()):
-    """One request: the operation, a target for every operation, and a risk rating.
-
-    `capture` is a screenshot of the window, passed when the tree is too sparse
-    to work from. `pointer` says whether the operations aimed at that picture
-    may be offered, and the two are separate on purpose. Photographing a window
-    needs nothing from the user — `screencapture` reads a window that is behind
-    everything else — while clicking a point in it, as delivered here, needs the
-    app in front. Tying them together meant a window could not be looked at
-    without being raised, and the looking is the half that costs nothing.
-
-    `refused` is (operation, path) pairs the app has turned down on this window
-    since it last changed. They are dropped from the table rather than argued
-    about in the prompt.
-    """
-    elements, targets, controls = action_space(
-        page, pixels=bool(capture) and pointer, refused=refused, pointer=pointer
-    )
+def choose(page, goal, history, refused=()):
+    """Choose one operation and its observed target, with an in-request risk rating."""
+    elements, targets, controls = action_space(page, refused=refused)
     operations = questions_for(targets, controls)
     state = {
         "goal": goal,
@@ -354,36 +266,7 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
             "What you are looking for may exist and not be here. Scrolling brings different "
             "elements into view. Choosing something that merely looks close is worse than BLOCKED."
         )
-    if capture:
-        state["screenshot"] = {
-            "why": (
-                "This window exposes almost nothing to the accessibility tree, so most of what "
-                "you can see in the picture has no element index. Prefer an indexed element when "
-                "one fits; fall back to CLICK_POINT only for what the table does not contain."
-                if pointer
-                else "This window exposes almost nothing to the accessibility tree. The picture is "
-                "here to be read, not aimed at: nothing in it can be clicked, because clicking a "
-                "point needs the app in front and this run was not given permission to raise it. "
-                "Use it to understand what the few offered elements are, and to say BLOCKED with a "
-                "reason rather than guessing."
-            ),
-            "width": capture["image_width"],
-            "height": capture["image_height"],
-        }
-        if pointer:
-            state["screenshot"]["coordinates"] = (
-                "Top-left origin. click_x is 0 to width, click_y is 0 to height."
-            )
-    # Which backend answers is decided by whether the window can be described
-    # in text at all. A System One model returns a choice, which is the whole
-    # shape of this decision and the argument the README makes; it also takes
-    # text only. When the tree is too sparse to describe, the choice has to be
-    # read off a picture, and that goes to the multimodal backend instead — the
-    # one path where writing the answer out is the price of being able to see.
-    if capture or not os.environ.get("JEV_API_KEY"):
-        reply = ask_chat(state, operations, targets, capture)
-    else:
-        reply = ask_jev(state, operations, targets)
+    reply = ask_jev(state, operations, targets) if os.environ.get("JEV_API_KEY") else ask_chat(state, operations, targets)
     answer = reply["answer"]
 
     operation = answer.get("operation")
@@ -398,36 +281,7 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
         action = targets[operation][target]
     elif operation in controls:
         action = dict(controls[operation])
-        if operation == "CLICK_POINT":
-            # A number sent as "136" is a formatting habit, not a different
-            # answer, and the bounds check below is what actually decides
-            # whether the point is usable. Refusing the string only meant
-            # refusing the provider.
-            x, y = (number(answer.get(key)) for key in ("click_x", "click_y"))
-            if x is None or y is None:
-                raise ValueError("CLICK_POINT came back without a usable point; no operation executed.")
-            width, height = capture["image_width"], capture["image_height"]
-            if not (0 <= x <= width and 0 <= y <= height):
-                raise ValueError(f"CLICK_POINT {x},{y} is outside the {width}x{height} capture; nothing executed.")
-            # The scale travels with the capture the point was named in, so a
-            # stale screenshot cannot be turned into a click somewhere else.
-            # The window's identity and size travel with it too, because the
-            # scale alone is not enough: a window that was resized between the
-            # picture and the click maps the same point somewhere else, and the
-            # click would land by coincidence. The bridge has always refused
-            # that; until this it was never given what it needed to notice.
-            action.update(
-                x=float(x),
-                y=float(y),
-                scale=capture["scale"],
-                window_id=capture["window_id"],
-                window_size=capture["window_size"],
-                label=f"point {int(x)},{int(y)}",
-            )
-        elif operation == "TYPE_KEYS":
-            action["label"] = "focused field"
-
-    if operation in {"KEY_CHORD", "SELECT_TEXT", "DRAG"}:
+    if operation in {"KEY_CHORD", "SELECT_TEXT"}:
         for name, spec in parameter_properties({operation}, targets).items():
             if answer.get(name) not in spec["enum"] or isinstance(answer.get(name), bool):
                 raise ValueError(f"Invalid {name}; nothing executed.")
@@ -435,17 +289,6 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
             action["key"] = answer["key_chord_key"]
         elif operation == "SELECT_TEXT":
             action.update(start=int(answer["selection_start"]), length=int(answer["selection_length"]))
-        else:
-            action["destination_path"] = targets["DRAG"][answer["drag_destination"]]["path"]
-    if operation == "DRAG_POINT":
-        coordinates = [number(answer.get(name)) for name in ("drag_start_x", "drag_start_y", "drag_end_x", "drag_end_y")]
-        for i, coordinate in enumerate(coordinates):
-            bound = capture["image_width" if i % 2 == 0 else "image_height"]
-            if coordinate is None or not 0 <= coordinate < bound:
-                raise ValueError("The drag point leaves the capture; nothing executed.")
-        action.update(start=coordinates[:2], end=coordinates[2:], scale=capture["scale"],
-                      window_id=capture["window_id"], window_size=capture["window_size"])
-
     risk = answer.get("risk")
     if not isinstance(risk, (int, float)) or not math.isfinite(risk):
         risk = 1.0  # An unreadable rating is treated as the consequential case.
@@ -453,12 +296,10 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
         "operation": operation,
         "target": target,
         "action": action,
-        "text": answer.get("keys_value") if operation == "TYPE_KEYS" else answer.get(operation.lower() + "_value"),
-        "pixels": bool(capture) and operation in PIXEL_CONTROLS,
+        "text": answer.get(operation.lower() + "_value"),
         "confidence": max(0.0, min(1.0, float(answer.get("confidence") or 0))),
         "risk": max(0.0, min(1.0, float(risk))),
         "risk_reason": str(answer.get("risk_reason") or "")[:300],
-        "probabilities": reply["probabilities"],
         "model": reply["model"],
         "usage": reply["usage"],
         "latency_ms": reply["latency_ms"],

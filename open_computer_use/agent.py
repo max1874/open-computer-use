@@ -3,14 +3,12 @@
 import time
 
 from .desktop import (
-    PIXEL_CHANGE_THRESHOLD,
     BridgeError,
     Desktop,
     Executed,
     StaleWindow,
     UnknownOutcome,
     disposition,
-    thumbnail_difference,
 )
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_DECISIONS, MAX_STALE_RETRIES, MAX_STEPS, RISK_THRESHOLD
@@ -64,8 +62,7 @@ class Agent:
     operation at or above `risk_threshold`. Without it the run stops at
     `needs_approval` and hands the decision back, rather than acting.
 
-    Accessibility operations work in the background. `activate=True` permits
-    foreground menu commands and pointer input; `pixels` separately permits capture.
+    The native bridge works without activating the app or moving the pointer.
     """
 
     def __init__(
@@ -75,9 +72,7 @@ class Agent:
         *,
         approve=None,
         risk_threshold=RISK_THRESHOLD,
-        activate=False,
         menus=True,
-        pixels=True,
         verify=None,
     ):
         goal = goal.strip() if isinstance(goal, str) else "\n".join(goal).strip()
@@ -96,29 +91,7 @@ class Agent:
         self.refused = set()
         # Consecutive decisions refused because the window moved under them.
         self.stale = 0
-        # Screenshots are a fallback for windows that publish nothing, not a
-        # default input. Set pixels=False to keep the run tree-only.
-        #
-        # Looking and aiming are separate permissions. `screencapture` reads a
-        # window that is behind everything else, so photographing one costs the
-        # user nothing and needs no consent beyond `pixels`. Clicking a point
-        # in that picture is delivered through the window server, which has one
-        # cursor, so as sent here it needs the app in front — and that is what
-        # `activate` is consent for.
-        #
-        # They used to be one flag, and the cost was silent: a window whose
-        # tree says nothing could not be looked at without being raised, so a
-        # background run saw an empty table, had no picture, and said BLOCKED
-        # without ever having been shown the thing it was failing to describe.
-        self.pixels = pixels
-        # Permission to aim the pointer, which is what `activate` buys and all
-        # that it buys. It is no longer tied to `pixels`, because a click aimed
-        # at an element's own rectangle is not a pixel operation: CLICK comes
-        # out of the table like PRESS does, and only its delivery needs the app
-        # in front. The pixel operations still need a capture on top of this.
-        self.pointer = bool(activate)
-        self.capture = None
-        self.desktop = Desktop(app, menus=menus, activate=activate)
+        self.desktop = Desktop(app, menus=menus)
         try:
             page = self.desktop.observe()
         except Exception:
@@ -133,18 +106,13 @@ class Agent:
             decisions=[],
             status="ready",
             verified=None,
-            # `activate=True` raises the app before the first observation, and
-            # that is the run taking the screen as surely as any step in it.
-            # Summing this over the steps alone reported False for a run that
-            # had already brought the window forward to begin with.
-            took_focus=bool(self.desktop.activation.get("took_focus")),
-            activated_at_start=bool(self.desktop.activation.get("frontmost")),
+            took_focus=False,
             elapsed_ms=0,
             started_at=None,
         )
 
     def snapshot(self):
-        elements, targets, _ = action_space(self.state["page"], pointer=self.pointer)
+        elements, targets, _ = action_space(self.state["page"])
         return {
             **{k: v for k, v in self.state.items() if k != "page"},
             "decision": public_decision(self.state["decision"]),
@@ -248,46 +216,13 @@ class Agent:
         if not self.desktop.fresh(state["page"]):
             self._observe()
         state["decision"] = None
-        # A window that will not say what is in it gets photographed. This
-        # is the expensive, less reliable path, so it is entered only when
-        # the tree leaves nothing to choose from.
-        capture = None
-        if state["page"]["sparse"] and not self.pixels:
-            state["note"] = (
-                "An observed window publishes almost nothing to the accessibility tree. "
-                "Pass pixels=True to let the model see a picture of it."
-            )
-        elif self.pixels and state["page"]["sparse"]:
-            # Why this window was judged sparse, kept with the step that
-            # acted on it. The verdict is a boolean by the time the decision
-            # is made, so a run that reached for pixels on a window that
-            # looks perfectly ordinary afterwards leaves nothing to examine
-            # — and a window is only ordinary *afterwards*. Music did this:
-            # a CLICK_POINT on a window that measured 72 actionable
-            # elements every time it was asked later.
-            state["sparseness"] = {
-                k: state["page"].get(k) for k in ("sparse", "actionable", "named", "coverage")
-            }
-            state["sparseness"]["text"] = len(state["page"].get("text") or "")
-            try:
-                capture = self.desktop.capture(page=state["page"])
-            except BridgeError as error:
-                state["capture_error"] = str(error)
-            if capture and not self.pointer:
-                state["note"] = (
-                    "An observed window publishes almost nothing to the accessibility tree, so the "
-                    "model is being shown a picture of it. Clicking a point in that picture "
-                    "needs the app in front; pass activate=True to allow it."
-                )
-        self.capture = capture
-        decision = choose(
-            state["page"],
-            state["goal"],
-            state["history"],
-            capture=capture,
-            pointer=self.pointer,
-            refused=self.refused,
-        )
+        _, targets, _ = action_space(state["page"], refused=self.refused)
+        if not targets:
+            state["status"] = "blocked"
+            state["note"] = "The app exposes no supported background controls. No input was sent."
+            state["elapsed_ms"] = self._elapsed()
+            return
+        decision = choose(state["page"], state["goal"], state["history"], refused=self.refused)
         state["decisions"].append(
             {
                 **{k: v for k, v in public_decision(decision).items() if k != "offered"},
@@ -352,11 +287,7 @@ class Agent:
         text, helper = None, None
         # Preparation failure sent no input; retain it as a refused step.
         try:
-            if operation == "TYPE_KEYS":
-                text = decision.get("text")
-                if not text:
-                    raise ValueError("TYPE_KEYS came back without text; nothing was typed.")
-            elif operation in {"TYPE_TEXT", "PASTE_TEXT"}:
+            if operation in {"TYPE_TEXT", "PASTE_TEXT"}:
                 if not self.desktop.fresh(page):
                     raise StaleWindow("The window changed before the value was settled. Choose again.")
                 text = decision.get("text")
@@ -464,6 +395,8 @@ class Agent:
             window_changed=None,
             executed_ms=self._elapsed(),
         )
+        if result.get("took_focus"):
+            state["took_focus"] = True
         try:
             changed = self._observe()
         except BridgeError as error:
@@ -473,24 +406,6 @@ class Agent:
             state["status"] = "blocked"
             return
         state["elapsed_ms"] = self._elapsed()
-        if result.get("took_focus"):
-            state["took_focus"] = True
-        if decision.get("pixels") and self.capture:
-            # The measurement that unlocked this operation, kept on the step
-            # that used it. A pixel step is the one kind that has to justify
-            # itself after the fact.
-            state["history"][-1]["sparseness"] = state.get("sparseness")
-            # The tree of a window like this hardly moves whatever happens
-            # inside it, so the picture is what says whether the click
-            # landed. A click that changed nothing visible missed.
-            try:
-                after = self.desktop.capture(window_id=self.capture["window_id"])
-                difference = thumbnail_difference(self.capture.get("thumbnail"), after.get("thumbnail"))
-                if difference is not None:
-                    changed = difference >= PIXEL_CHANGE_THRESHOLD
-                    state["history"][-1]["pixel_difference"] = round(difference, 2)
-            except BridgeError:
-                pass
         state["history"][-1].update(
             window_changed=changed,
             elapsed_ms=state["elapsed_ms"],

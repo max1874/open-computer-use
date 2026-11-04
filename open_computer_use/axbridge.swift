@@ -92,7 +92,12 @@ func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     guard axReadFailure == nil else { return nil }
     var value: CFTypeRef?
     let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
-    recordRead(status)
+    // Match the census's optional-metadata handling. An unread diagnostic name
+    // cannot erase a role/ID already proved by that census. Subrole stays fatal
+    // here so an unknown editable security classification cannot fail open.
+    if status != .failure || ![kAXIdentifierAttribute, kAXTitleUIElementAttribute, kAXDescriptionAttribute].contains(name) {
+        recordRead(status)
+    }
     if attributeCache != nil, let value { attributeCache![element]?.values[name] = value }
     return value
 }
@@ -161,7 +166,11 @@ func screenLocked() -> Bool {
 /// this process has an accessibility connection, so the window list — which is
 /// ordered front to back and caches nothing — is the fallback.
 func frontmostPID() -> pid_t {
-    if let focused = attr(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute) {
+    // Global focus is diagnostic, not a read from the target's identity census.
+    // An unavailable system-wide AX connection must not poison a valid app snapshot.
+    var focused: CFTypeRef?
+    if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString,
+                                    &focused) == .success, let focused {
         var pid: pid_t = 0
         AXUIElementGetPid(focused as! AXUIElement, &pid)
         if pid != 0 { return pid }
@@ -488,12 +497,13 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     guard enabled else { return [] }
     var out: [String] = []
     let available = Set(actionNames(element))
-    if available.contains(kAXPressAction) { out.append("PRESS") }
+    if available.contains(kAXPressAction), role != kAXPopUpButtonRole, role != "AXMenuButton" {
+        out.append("PRESS")
+    }
     if editableRoles.contains(role) {
         if settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
         if settable(element, kAXFocusedAttribute) { out += ["PASTE_TEXT", "KEY_CHORD"] }
         if !secureField(element), settable(element, kAXSelectedTextRangeAttribute) { out.append("SELECT_TEXT") }
-        if !secureField(element) { out.append("DRAG") }
     }
     if role == kAXPopUpButtonRole || role == "AXMenuButton" { out.append("SELECT") }
     if available.contains(kAXIncrementAction) { out.append("INCREMENT") }
@@ -501,7 +511,7 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     // Only where the accessibility API offers nothing. CLICK is aimed at a
     // rectangle rather than addressed to an element, so it is the weaker way to
     // reach anything that can also be pressed.
-    if out.isEmpty, named, clickableContentRoles.contains(role) { out += ["CLICK", "DRAG"] }
+    if out.isEmpty, named, clickableContentRoles.contains(role) { out.append("CLICK") }
     // AXShowMenu is deliberately not offered. It works, but showing a menu
     // requires macOS to activate the app, so the one operation that opens a
     // context menu without aiming a right-click also takes the screen.
@@ -640,7 +650,7 @@ final class Walker {
                 // and the controls that actually drive the app fall off the end
                 // of a table that looks full. Whichever runs out, the snapshot
                 // says it was truncated.
-                let clickOnly = Set(ops).isSubset(of: ["CLICK", "DRAG"])
+                let clickOnly = Set(ops).isSubset(of: ["CLICK"])
                 if clickOnly ? content >= contentLimit : actionable >= limit {
                     truncate(path, clickOnly ? "content_budget" : "control_budget")
                 } else {
@@ -815,12 +825,22 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
         walker.walk(surface.element, path: surface.path, depth: 0, maxDepth: maxDepth)
         windows[windows.count-1]["text"] = walker.texts.dropFirst(textStart).joined(separator: "\n")
     }
+    // Unknown names only threaten uniqueness when another node of that role exists.
+    // Each node contributes exactly once to the identifier-free count, including
+    // nodes with IDs. Reuse the full census rather than trusting the published table.
+    var competingRoles: [String: Set<String>] = [:]
+    for (scope, roles) in walker.unknownNames {
+        competingRoles[scope] = Set(roles.filter { role in
+            walker.counts[scope, default: [:]].filter { $0.key.role == role && $0.key.identifier.isEmpty }
+                .values.reduce(0, +) > 1
+        })
+    }
     for i in walker.elements.indices {
         let item = walker.elements[i]
         if let target = walker.targets[item.path],
             let scope = surfaces.first(where: { CFEqual($0.element, target.surface) }) {
             walker.elements[i].identityProven = !walker.incomplete.contains(scope.path)
-                && !walker.unknownNames[scope.path, default: []].contains(target.identity.role)
+                && !competingRoles[scope.path, default: []].contains(target.identity.role)
                 && walker.counts[scope.path]?[target.identity] == 1
                 && (target.identity.identifier.isEmpty || !walker.unknownIDs[scope.path, default: []].contains(target.identity.unnamedID))
         }
@@ -845,7 +865,7 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
         fingerprint: digest(material), truncated: walker.truncated, active: active, instance: instance,
         targets: walker.targets, surfaces: windows, truncations: walker.truncations,
         complete: walker.complete, nodesObserved: walker.seen.count,
-        unprovenRoles: Dictionary(uniqueKeysWithValues: surfaces.map { ($0.element, walker.unknownNames[$0.path, default: []]) }))
+        unprovenRoles: Dictionary(uniqueKeysWithValues: surfaces.map { ($0.element, competingRoles[$0.path, default: []]) }))
 }
 
 func snapshotJSON(_ snap: Snapshot) -> [String: Any] {
@@ -874,7 +894,7 @@ func observedTargets(_ request: [String: Any], app: NSRunningApplication) throws
     guard try processInstance(app.processIdentifier) == old.instance else {
         throw BridgeError(message: "stale: the observed process restarted")
     }
-    let fields = request["destination_path"] == nil ? ["path"] : ["path", "destination_path"]
+    let fields = ["path"]
     for field in fields {
         guard let path = request[field] as? String, old.proven.contains(path) else {
             throw BridgeError(message: "stale: the target was not proven unique in its observation")
@@ -989,104 +1009,6 @@ func pressKey(_ combo: String, pid: pid_t) throws {
     try post(up, pid: pid)
 }
 
-/// Every character the current keyboard layout can produce, mapped back to the
-/// key and the modifiers that produce it.
-///
-/// A synthetic key event can carry a character on a virtual key of zero, and a
-/// Cocoa text field will accept it. Chromium will not. Its key handling starts
-/// from the key that was pressed and derives the character from it, so an event
-/// with no real key behind it arrives at the web page as nothing — which is why
-/// typing into Lark's composer silently did nothing while `cmd+a` and `delete`,
-/// which carry real keys, worked on the same element in the same state.
-///
-/// So a character is typed the way a keyboard types it: the key that bears it,
-/// plus the modifiers that select it. The table is built once by asking the
-/// active layout what each key produces under each modifier combination, which
-/// means a non-US layout types its own characters rather than mojibake.
-let keyboardLayout: [Character: (code: CGKeyCode, flags: CGEventFlags)] = {
-    var map: [Character: (CGKeyCode, CGEventFlags)] = [:]
-    guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-        let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
-    else { return map }
-    let data = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue() as Data
-    // Plainest first, so a character that needs no modifier never gets recorded
-    // as one that does.
-    let combinations: [(UInt32, CGEventFlags)] = [
-        (0, []),
-        (UInt32(shiftKey) >> 8, .maskShift),
-        (UInt32(optionKey) >> 8, .maskAlternate),
-        ((UInt32(shiftKey) | UInt32(optionKey)) >> 8, [.maskShift, .maskAlternate]),
-    ]
-    let keyboardType = UInt32(LMGetKbdType())
-    data.withUnsafeBytes { buffer in
-        guard let layout = buffer.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return }
-        for (modifiers, flags) in combinations {
-            for code in 0..<CGKeyCode(128) {
-                var dead: UInt32 = 0
-                var length = 0
-                var characters = [UniChar](repeating: 0, count: 8)
-                let status = UCKeyTranslate(
-                    layout, code, UInt16(kUCKeyActionDisplay), modifiers, keyboardType,
-                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, characters.count, &length,
-                    &characters)
-                guard status == noErr, length == 1, let scalar = UnicodeScalar(characters[0]),
-                    !CharacterSet.controlCharacters.contains(scalar)
-                else { continue }
-                let character = Character(scalar)
-                if map[character] == nil { map[character] = (code, flags) }
-            }
-        }
-    }
-    return map
-}()
-
-/// Type a string into whatever the target process has focused.
-///
-/// Characters the current keyboard layout can produce are sent as the real
-/// (keycode, modifier) pair that produces them, which is what an app reading
-/// `keyCode` rather than the character needs, and what makes a modifier appear
-/// held rather than merely implied. That covers the layout — for a US layout,
-/// the ASCII range — and it is verified against a Chromium composer.
-///
-/// It is not general text input. Anything the layout has no key for, which is
-/// every CJK character and every emoji, still goes as a Unicode string on a
-/// synthetic key, exactly as before: native fields take it, web content may
-/// not, and there is no third option for a character no key produces. The
-/// layout is read once and cached, so switching input source mid-session is
-/// not picked up either. "Background typing works for what the layout can
-/// produce" is the claim this supports; "typing is solved" is not.
-func typeText(_ text: String, pid: pid_t) throws {
-    for character in text {
-        if let key = keyboardLayout[character] {
-            // Nothing else is attached to the event: this is the shape that is
-            // known to reach web content, and overriding the character would
-            // only put back the thing Chromium rejects.
-            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key.code, keyDown: true),
-                let up = CGEvent(keyboardEventSource: nil, virtualKey: key.code, keyDown: false)
-            else { continue }
-            down.flags = key.flags
-            up.flags = key.flags
-            try post(down, pid: pid)
-            sleepMs(4)
-            try post(up, pid: pid)
-        } else {
-            // Emoji, CJK, anything this layout has no key for. A native field
-            // takes it; web content may not, and there is no other way to send
-            // a character that no key produces.
-            var chars = Array(String(character).utf16)
-            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-            else { continue }
-            down.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
-            up.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
-            try post(down, pid: pid)
-            sleepMs(4)
-            try post(up, pid: pid)
-        }
-        sleepMs(4)
-    }
-}
-
 // MARK: - Text editing
 
 func focus(_ element: AXUIElement, pid: pid_t) throws {
@@ -1163,272 +1085,10 @@ func pasteText(_ text: String, into element: AXUIElement, pid: pid_t) throws -> 
     return "pasteboard→CGEvent→pid"
 }
 
-func surfaceWindow(_ app: NSRunningApplication, _ surface: AXUIElement) throws -> (id: CGWindowID, rect: CGRect) {
-    let rect = frame(surface)
-    let matches = onScreenWindows().filter { window in
-        guard (window[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier,
-            let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
-        return abs((bounds["X"] ?? 0)-rect.minX) < 1 && abs((bounds["Y"] ?? 0)-rect.minY) < 1
-            && abs((bounds["Width"] ?? 0)-rect.width) < 1 && abs((bounds["Height"] ?? 0)-rect.height) < 1
-    }
-    guard matches.count == 1, let id = matches[0][kCGWindowNumber as String] as? Int else {
-        throw BridgeError(message: "the observed surface cannot be mapped to one on-screen window")
-    }
-    return (CGWindowID(id), rect)
-}
-
-/// Prepare the whole gesture before dispatch, then own its button release and pointer restoration.
-func postPointer(_ sequence: [(type: CGEventType, point: CGPoint, delay: Int)],
-                 restoreDelay: Int = 0, beforePress: (() throws -> Void)? = nil) throws {
-    let restore = CGEvent(source: nil)?.location
-    let events = try sequence.map { step -> CGEvent in
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: step.type,
-                                  mouseCursorPosition: step.point, mouseButton: .left) else {
-            throw BridgeError(message: "could not prepare pointer events")
-        }
-        event.setIntegerValueField(.mouseEventClickState, value: 1)
-        return event
-    }
-    var held = false
-    defer {
-        if held { events.last!.post(tap: .cghidEventTap) }
-        if let restore, let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                           mouseCursorPosition: restore, mouseButton: .left) {
-            sleepMs(restoreDelay)
-            move.post(tap: .cghidEventTap)
-        }
-    }
-    try requireReadable()
-    for (step, event) in zip(sequence, events) {
-        try requireProcess()
-        if step.type == .leftMouseDown { try beforePress?() }
-        dispatchStarted = true
-        event.post(tap: .cghidEventTap)
-        if step.type == .leftMouseDown { held = true }
-        if step.type == .leftMouseUp { held = false }
-        sleepMs(step.delay)
-    }
-}
-
-func drag(_ app: NSRunningApplication, from start: CGPoint, to end: CGPoint,
-          sourceWindow: CGWindowID, destinationWindow: CGWindowID) throws -> [String: Any] {
-    guard frontmostPID() == app.processIdentifier else {
-        throw BridgeError(message: "a pointer drag requires the app in front")
-    }
-    guard frontWindow(at: start)?.id == sourceWindow, frontWindow(at: end)?.id == destinationWindow else {
-        throw BridgeError(message: "a drag endpoint is covered by another window")
-    }
-    let points = (0...16).map { i in
-        CGPoint(x: start.x + (end.x-start.x) * Double(i)/16,
-                y: start.y + (end.y-start.y) * Double(i)/16)
-    }
-    for (i, point) in points.enumerated() {
-        let owner = frontWindow(at: point)
-        guard owner?.pid == app.processIdentifier || (owner == nil && i > 0 && i < 16) else {
-            throw BridgeError(message: "the drag path is covered by another app or leaves the observed windows")
-        }
-    }
-    let types: [CGEventType] = [.leftMouseDown] + Array(repeating: .leftMouseDragged, count: 16) + [.leftMouseUp]
-    let locations = [start] + Array(points.dropFirst()) + [end]
-    try postPointer(zip(types, locations).map { (type: $0, point: $1, delay: 25) })
-    return ["detail": "drag delivered", "mechanism": "HID (real pointer)", "verified": false]
-}
-
-// MARK: - Pixels, for apps that publish nothing
-
-/// The on-screen window of an app, in global points, with its CGWindow id.
-func windowRect(_ app: NSRunningApplication, id expected: CGWindowID? = nil) throws -> (id: CGWindowID, rect: CGRect) {
-    for window in onScreenWindows() where (window[kCGWindowLayer as String] as? Int) == 0 {
-        guard (window[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier else { continue }
-        if let expected, (window[kCGWindowNumber as String] as? Int) != Int(expected) { continue }
-        let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
-        let rect = CGRect(
-            x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
-            width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0)
-        guard rect.width > 1, rect.height > 1 else { continue }
-        return (CGWindowID(window[kCGWindowNumber as String] as? Int ?? 0), rect)
-    }
-    throw BridgeError(message: "\(app.localizedName ?? "the app") has no on-screen window to capture")
-}
-
-/// Capture one window as a JPEG, downscaled to `width` points.
-///
-/// The model is shown a picture whose coordinate space is the window's own, so
-/// a point it names converts back to the screen by one offset and one scale.
-func capture(_ app: NSRunningApplication, width: Int, quality: Double, windowID: CGWindowID? = nil) throws -> [String: Any] {
-    guard try freshPermissions()["screen_recording"] as? Bool == true else {
-        throw BridgeError(
-            message: "Screen Recording permission is missing, so a capture would be blank. "
-                + "System Settings > Privacy & Security > Screen Recording: enable the app running this "
-                + "shell, then restart it.")
-    }
-    let (id, rect) = try windowRect(app, id: windowID)
-    let file = FileManager.default.temporaryDirectory
-        .appendingPathComponent("open-computer-use-\(UUID().uuidString).png")
-    defer { try? FileManager.default.removeItem(at: file) }
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    task.arguments = ["-x", "-o", "-l", "\(id)", file.path]
-    try? task.run()
-    task.waitUntilExit()
-    guard task.terminationStatus == 0, let raw = NSImage(contentsOf: file) else {
-        throw BridgeError(message: "screencapture failed (\(task.terminationStatus))")
-    }
-    guard let source = raw.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-        throw BridgeError(message: "could not read the captured image")
-    }
-    // The capture is in pixels; the window is in points. Downscale to a width
-    // the model can read cheaply and record the factor back to screen points.
-    let target = min(width, source.width)
-    let height = Int((Double(source.height) / Double(source.width) * Double(target)).rounded())
-    guard
-        let context = CGContext(
-            data: nil, width: target, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
-    else { throw BridgeError(message: "could not build a scaling context") }
-    context.interpolationQuality = .high
-    context.draw(source, in: CGRect(x: 0, y: 0, width: target, height: height))
-    guard let scaled = context.makeImage() else { throw BridgeError(message: "could not scale the capture") }
-    let bitmap = NSBitmapImageRep(cgImage: scaled)
-    guard
-        let jpeg = bitmap.representation(
-            using: .jpeg, properties: [.compressionFactor: quality])
-    else { throw BridgeError(message: "could not encode the capture") }
-    return [
-        "thumbnail": thumbnail(scaled),
-        "image": jpeg.base64EncodedString(),
-        "media_type": "image/jpeg",
-        "image_width": target,
-        "image_height": height,
-        // Multiply an image point by this and add the origin to reach the screen.
-        "scale": Double(rect.width) / Double(target),
-        "origin": [Double(rect.minX), Double(rect.minY)],
-        "window_id": Int(id),
-        "window_size": [Double(rect.width), Double(rect.height)],
-        "window_frame": [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)],
-        "bytes": jpeg.count,
-    ]
-}
-
-/// The frontmost ordinary window covering a screen point, if any.
-///
-/// `CGWindowListCopyWindowInfo` returns windows front to back, so the first
-/// match is what the window server would hand a click at that point.
-func frontWindow(at point: CGPoint) -> (id: CGWindowID, pid: pid_t)? {
-    for window in onScreenWindows() where (window[kCGWindowLayer as String] as? Int) == 0 {
-        let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
-        let rect = CGRect(
-            x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
-            width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0)
-        guard rect.contains(point) else { continue }
-        return (
-            CGWindowID(window[kCGWindowNumber as String] as? Int ?? 0),
-            window[kCGWindowOwnerPID as String] as? pid_t ?? 0
-        )
-    }
-    return nil
-}
-
-/// A 16x16 greyscale reduction of the capture.
-///
-/// An Electron window's accessibility fingerprint barely moves no matter what
-/// happens inside it, so the tree cannot tell whether a click landed. Comparing
-/// two of these can, as long as the comparison is local: a 16x16 grid is coarse
-/// enough that a caret blink disappears into a cell, and fine enough that a
-/// pressed button or an opened panel owns several. See `thumbnail_difference`
-/// in desktop.py, which scores it in overlapping regions rather than averaging
-/// the grid, and says what happens when you average it instead.
-func thumbnail(_ image: CGImage) -> [Int] {
-    let side = 16
-    var pixels = [UInt8](repeating: 0, count: side * side)
-    guard
-        let context = CGContext(
-            data: &pixels, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side,
-            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
-    else { return [] }
-    context.interpolationQuality = .medium
-    context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
-    return pixels.map { Int($0) }
-}
-
-/// Click a point named in the captured image's coordinate space.
-///
-/// This moves the real pointer, and there is no way around it. A mouse event
-/// posted to a process is ignored by ordinary controls — Calculator's keypad
-/// does not react to one whether the app is frontmost or not — so a click that
-/// actually lands has to go through the window server, which has exactly one
-/// cursor and hands the event to whatever is under it.
-///
-/// Hence the two guards below: the app must be frontmost, and the point must
-/// not be covered. Everything on the accessibility path stays quiet and
-/// background; this does not, and cannot.
-func clickImagePoint(
-    _ app: NSRunningApplication, x: Double, y: Double, scale: Double,
-    capturedWindow: CGWindowID?, capturedSize: [Double]?
-) throws -> [String: Any] {
-    guard frontmostPID() == app.processIdentifier else {
-        throw BridgeError(
-            message: "refused: a real click goes wherever the pointer is, and "
-                + "\(app.localizedName ?? "the app") is not frontmost. Activate it first.")
-    }
-    let (id, rect) = try windowRect(app, id: capturedWindow)
-    // The point was named in a picture of one window at one size. If either
-    // has changed, the scale that came with the picture no longer maps that
-    // point anywhere meaningful — the click would land by coincidence.
-    if let capturedWindow, capturedWindow != id {
-        throw BridgeError(message: "refused: the window changed since the screenshot; capture again")
-    }
-    if let capturedSize, capturedSize.count == 2 {
-        let moved = abs(capturedSize[0] - Double(rect.width)) > 1 || abs(capturedSize[1] - Double(rect.height)) > 1
-        if moved {
-            throw BridgeError(
-                message: "refused: the window was \(Int(capturedSize[0]))x\(Int(capturedSize[1])) when the "
-                    + "screenshot was taken and is now \(Int(rect.width))x\(Int(rect.height)); capture again")
-        }
-    }
-    let point = CGPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
-    return try postClick(app, at: point, windowID: id, windowRect: rect)
-}
-
-/// Move, press, release, put the pointer back. The guards are the point.
-///
-/// Shared by the two ways a click is aimed — a point named in a screenshot and
-/// the middle of an element's rectangle — because the dangerous part is the
-/// same either way, and a second copy of it is a second place to get it wrong.
-func postClick(
-    _ app: NSRunningApplication, at point: CGPoint, windowID id: CGWindowID, windowRect rect: CGRect
-) throws -> [String: Any] {
-    guard rect.insetBy(dx: -2, dy: -2).contains(point) else {
-        throw BridgeError(
-            message: "point \(Int(point.x)),\(Int(point.y)) is outside the window "
-                + "\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height))")
-    }
-    // A point inside the window is not a point on the window. The window list
-    // is ordered front to back, so whatever owns this point first is what a
-    // click would actually hit — and a click that lands in somebody else's
-    // window is the worst thing this program can do.
-    if let covering = frontWindow(at: point), covering.id != id {
-        let owner = NSRunningApplication(processIdentifier: covering.pid)?.localizedName ?? "another app"
-        throw BridgeError(
-            message: "refused: \(Int(point.x)),\(Int(point.y)) is covered by \(owner). "
-                + "Raise \(app.localizedName ?? "the app") first, or choose a point that is not occluded.")
-    }
-    let sequence: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
-    try postPointer(sequence.map { (type: $0, point: point, delay: $0 == .mouseMoved ? 30 : 40) },
-                    restoreDelay: 40) {
-        guard frontmostPID() == app.processIdentifier, frontWindow(at: point)?.id == id else {
-            throw BridgeError(message: "the click target lost foreground ownership")
-        }
-    }
-    return [
-        "ok": true,
-        "detail": "clicked \(Int(point.x)),\(Int(point.y)) in \(app.localizedName ?? "the app")",
-        "mechanism": "HID (real pointer)",
-    ]
-}
-
 func pressMenuPath(_ app: NSRunningApplication, _ path: String) throws -> String {
+    guard frontmostPID() == app.processIdentifier else {
+        throw BridgeError(message: "menu commands require an already-active app; activation is unavailable")
+    }
     let titles = path.split(separator: ">").map { $0.trimmingCharacters(in: .whitespaces) }
     guard let bar = children(appElement(app)).first(where: { string($0, kAXRoleAttribute) == kAXMenuBarRole })
     else { throw BridgeError(message: "no menu bar exposed") }
@@ -1457,7 +1117,7 @@ func focusFacts(_ before: pid_t, _ app: NSRunningApplication) -> [String: Any] {
     return [
         "frontmost_before": Int(before),
         "frontmost_after": Int(after),
-        // True only if this operation is what brought the app forward.
+        // Endpoint evidence only; full-run acceptance observes activation events independently.
         "took_focus": before != app.processIdentifier && after == app.processIdentifier,
     ]
 }
@@ -1465,6 +1125,10 @@ func focusFacts(_ before: pid_t, _ app: NSRunningApplication) -> [String: Any] {
 func execute(_ request: [String: Any]) throws -> [String: Any] {
     guard let appName = request["app"] as? String, let op = request["op"] as? String else {
         throw BridgeError(message: "act needs app and op")
+    }
+    guard ["PRESS", "CLICK", "TYPE_TEXT", "PASTE_TEXT", "SELECT_TEXT", "KEY_CHORD",
+           "SELECT", "MENU", "KEY", "SCROLL_UP", "SCROLL_DOWN", "INCREMENT", "DECREMENT"].contains(op) else {
+        throw BridgeError(message: "unsupported background operation \(op)")
     }
     let app = try runningApp(appName)
     let pid = app.processIdentifier
@@ -1480,9 +1144,10 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
     dispatchProcess = (pid, instance)
     dispatchStarted = false
     defer { dispatchProcess = nil }
+    let before = frontmostPID()
     let result = try executeAction(request, app: app, op: op)
     try requireProcess()
-    return result
+    return result.merging(focusFacts(before, app)) { _, fact in fact }
 }
 
 func executeAction(_ request: [String: Any], app: NSRunningApplication, op: String) throws -> [String: Any] {
@@ -1491,57 +1156,18 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     // Menu titles and enabled states are revalidated by the app itself; any
     // operation can change them ("Make Rich Text" becomes "Make Plain Text").
     menuCache[pid] = nil
-    // Whether this operation took the screen is a fact about what happened,
-    // not a promise about what should happen. Record it either side so the
-    // claim can be checked instead of believed.
-    let focusBefore = frontmostPID()
 
     if op == "MENU" {
         guard let path = request["menu"] as? String else { throw BridgeError(message: "MENU needs a menu path") }
         return ["ok": true, "detail": try pressMenuPath(app, path), "mechanism": "AXPress(menu)"]
-            .merging(focusFacts(focusBefore, app)) { a, _ in a }
     }
     if op == "KEY" {
         guard let combo = request["key"] as? String else { throw BridgeError(message: "KEY needs a combo") }
-        try pressKey(combo, pid: pid)
-        return ["ok": true, "detail": "key \(combo)", "mechanism": "CGEvent→pid"].merging(focusFacts(focusBefore, app)) { a, _ in a }
-    }
-    if op == "CLICK_POINT" {
-        guard let x = request["x"] as? Double, let y = request["y"] as? Double,
-            let scale = request["scale"] as? Double
-        else { throw BridgeError(message: "CLICK_POINT needs x, y and the capture's scale") }
-        // This is the one operation that needs the app in front, so it is the
-        // one whose focus facts matter most, and it was the only one not
-        // reporting them. A run that summed `took_focus` over its steps could
-        // say False while every click in it went to a raised window.
-        return try clickImagePoint(
-            app, x: x, y: y, scale: scale,
-            capturedWindow: (request["window_id"] as? Int).map { CGWindowID($0) },
-            capturedSize: request["window_size"] as? [Double])
-            .merging(focusFacts(focusBefore, app)) { a, _ in a }
-    }
-    if op == "DRAG_POINT" {
-        guard let start = request["start"] as? [Double], let end = request["end"] as? [Double],
-            start.count == 2, end.count == 2, let scale = request["scale"] as? Double,
-            let capturedWindow = request["window_id"] as? Int,
-            let size = request["window_size"] as? [Double], size.count == 2,
-            scale.isFinite, scale > 0, (start + end + size).allSatisfy({ $0.isFinite }) else {
-            throw BridgeError(message: "DRAG_POINT requires two finite capture points and its window identity")
+        guard ["return", "esc"].contains(combo.lowercased()) else {
+            throw BridgeError(message: "only Return and Escape are available as untargeted keys")
         }
-        let (id, rect) = try windowRect(app, id: CGWindowID(capturedWindow))
-        guard Int(id) == capturedWindow, abs(Double(rect.width)-size[0]) < 1,
-            abs(Double(rect.height)-size[1]) < 1 else { throw BridgeError(message: "stale: the capture window changed") }
-        let a = CGPoint(x: rect.minX+start[0]*scale, y: rect.minY+start[1]*scale)
-        let b = CGPoint(x: rect.minX+end[0]*scale, y: rect.minY+end[1]*scale)
-        guard rect.contains(a), rect.contains(b) else { throw BridgeError(message: "drag points leave the capture") }
-        return try drag(app, from: a, to: b, sourceWindow: id, destinationWindow: id).merging(focusFacts(focusBefore, app)) { a, _ in a }
-    }
-    if op == "TYPE_KEYS" {
-        // No element to set a value on; the keystrokes go wherever the app's
-        // own focus is, which is why this needs a visible confirmation after.
-        guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_KEYS needs text") }
-        try typeText(text, pid: pid)
-        return ["ok": true, "detail": "typed \(text.count) characters", "mechanism": "CGEvent→pid (blind)"].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        try pressKey(combo, pid: pid)
+        return ["ok": true, "detail": "key \(combo)", "mechanism": "CGEvent→pid"]
     }
     if op == "SCROLL_UP" || op == "SCROLL_DOWN" {
         let root = appElement(app)
@@ -1551,7 +1177,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             throw BridgeError(message: "no scrollable area found")
         }
         try scroll(area, pid: pid, amount: op == "SCROLL_UP" ? 240 : -240)
-        return ["ok": true, "detail": op.lowercased(), "mechanism": "CGEvent→pid"].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        return ["ok": true, "detail": op.lowercased(), "mechanism": "CGEvent→pid"]
     }
 
     guard let path = request["path"] as? String else { throw BridgeError(message: "\(op) needs an element path") }
@@ -1604,6 +1230,10 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
 
     switch op {
     case "PRESS":
+        let role = string(element, kAXRoleAttribute)
+        guard role != kAXPopUpButtonRole, role != "AXMenuButton" else {
+            throw BridgeError(message: "opening this menu can activate the app; background execution refused")
+        }
         let available = actionNames(element)
         guard available.contains(kAXPressAction) else {
             throw BridgeError(message: "\(current) offers no AXPress; it has \(available)")
@@ -1619,53 +1249,25 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             verified = false
         }
         return ["ok": true, "detail": current, "mechanism": "AXPress", "verified": verified]
-            .merging(focusFacts(focusBefore, app)) { a, _ in a }
-    case "CLICK", "CLICK_BACKGROUND":
-        // CLICK_BACKGROUND is an executor permission, not another model
-        // operation. Never fall back to the pointer if this capability vanished.
-        if op == "CLICK_BACKGROUND" {
-            guard let target = backgroundClickTarget(element) else {
-                throw BridgeError(message: "refused: \(current) has no background click delivery")
-            }
-            let result = try setAttribute(target.element, target.attribute, target.value)
-            guard result == .success else {
-                throw mutationError(result, "background click failed: \(describe(result))")
-            }
-            return ["ok": true, "detail": current, "mechanism": target.attribute]
-                .merging(focusFacts(focusBefore, app)) { a, _ in a }
+    case "CLICK":
+        guard let target = backgroundClickTarget(element) else {
+            throw BridgeError(message: "refused: this element has no native background selection")
         }
-        // For elements the accessibility API will not act on. A song in Music
-        // is a static text: it has a name, a rectangle and no AXPress, and
-        // until this existed there was no way to choose one. The click is aimed
-        // at the middle of the rectangle as it stands now, re-read after the
-        // staleness guards above have confirmed this is still the element the
-        // decision was made about.
-        //
-        // This is the weaker way to reach anything, and it is offered only when
-        // nothing else can reach it. Unlike AXPress it needs the app in front,
-        // because the pointer is shared with the person using the machine.
-        guard frontmostPID() == app.processIdentifier else {
-            throw BridgeError(
-                message: "refused: a real click goes wherever the pointer is, and "
-                    + "\(app.localizedName ?? "the app") is not frontmost. Activate it first.")
+        let result = try setAttribute(target.element, target.attribute, target.value)
+        guard result == .success else {
+            throw mutationError(result, "background click failed: \(describe(result))")
         }
-        let (windowID, windowFrame) = try surfaceWindow(app, targets["path"]!.surface)
-        let box = frame(element)
-        guard box.width > 0, box.height > 0 else {
-            throw BridgeError(message: "\(current) has no size to aim at")
-        }
-        let centre = CGPoint(x: box.midX, y: box.midY)
-        return try postClick(app, at: centre, windowID: windowID, windowRect: windowFrame)
-            .merging(["detail": "clicked \(current)"]) { _, b in b }
-            .merging(focusFacts(focusBefore, app)) { a, _ in a }
+        return ["detail": current, "mechanism": target.attribute]
     case "INCREMENT", "DECREMENT":
         // Actions the element published about itself. Asking the app to step
         // its own control moves nothing on screen and aims at nothing.
         let action = op == "INCREMENT" ? kAXIncrementAction : kAXDecrementAction
         try perform(element, action)
-        return ["ok": true, "detail": current, "mechanism": action].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        return ["ok": true, "detail": current, "mechanism": action]
     case "KEY_CHORD":
         guard let key = request["key"] as? String else { throw BridgeError(message: "KEY_CHORD needs a key") }
+        let editingKeys = Set("cmd+a cmd+c cmd+x cmd+v cmd+z cmd+shift+z cmd+left cmd+right left right up down shift+left shift+right alt+left alt+right shift+alt+left shift+alt+right delete forwarddelete tab shift+tab return escape".split(separator: " ").map(String.init))
+        guard editingKeys.contains(key) else { throw BridgeError(message: "unsupported field editing key") }
         try focus(element, pid: pid)
         // Native selection also works when an inactive app has not validated Edit > Select All.
         if key == "cmd+a", !secure, settable(element, kAXSelectedTextRangeAttribute) {
@@ -1693,18 +1295,6 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
         sleepMs(40)
         let verified = expected.map { $0 == string(element, kAXValueAttribute) } ?? false
         return ["detail": "text insertion delivered", "mechanism": mechanism, "verified": verified]
-    case "DRAG":
-        guard let destination = targets["destination_path"] else { throw BridgeError(message: "DRAG needs an observed destination") }
-        let sourceRect = frame(element), destinationRect = frame(destination.element)
-        let sourceWindow = try surfaceWindow(app, targets["path"]!.surface)
-        let destinationWindow = try surfaceWindow(app, destination.surface)
-        guard sourceRect.width > 0, sourceRect.height > 0, destinationRect.width > 0, destinationRect.height > 0 else {
-            throw BridgeError(message: "the drag target has no geometry")
-        }
-        return try drag(app, from: CGPoint(x: sourceRect.midX, y: sourceRect.midY),
-                        to: CGPoint(x: destinationRect.midX, y: destinationRect.midY),
-                        sourceWindow: sourceWindow.id, destinationWindow: destinationWindow.id)
-            .merging(focusFacts(focusBefore, app)) { a, _ in a }
     case "TYPE_TEXT":
         guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_TEXT needs text") }
         let wanted = withoutScaffolding(text)
@@ -1782,7 +1372,6 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             if secure {
                 return ["detail": current, "mechanism": mechanism, "verified": false,
                         "unverified": "secure field values are never read back"]
-                    .merging(focusFacts(focusBefore, app)) { a, _ in a }
             }
             var after = string(element, kAXValueAttribute)
             var settled = withoutScaffolding(after)
@@ -1797,7 +1386,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
                 throw BridgeError(message: "the value was sent but its read-back failed", delivery: .deliveredUnverified)
             }
             if settled == wanted {
-                return ["ok": true, "detail": describe(element), "mechanism": mechanism, "verified": true].merging(focusFacts(focusBefore, app)) { a, _ in a }
+                return ["ok": true, "detail": describe(element), "mechanism": mechanism, "verified": true]
             }
             // Some fields expose no readable value at all. That is not a failure,
             // but it is not confirmation either, and the caller must be told which.
@@ -1805,7 +1394,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
                 return [
                     "ok": true, "detail": describe(element), "mechanism": mechanism, "verified": false,
                     "unverified": "this field exposes no readable value, so the write could not be confirmed",
-                ].merging(focusFacts(focusBefore, app)) { a, _ in a }
+                ]
             }
             // The field was emptied on the way in, so this failure is about a
             // field this call has already changed, not a pre-flight refusal.
@@ -1837,7 +1426,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             if verified || axReadFailure != nil { break }
             if attempt < 16 { sleepMs(25) }
         }
-        return ["ok": true, "detail": "popup choice delivered", "mechanism": "AXPress(option)", "verified": verified].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        return ["ok": true, "detail": "popup choice delivered", "mechanism": "AXPress(option)", "verified": verified]
     default:
         throw BridgeError(message: "unknown operation \(op)")
     }
@@ -1866,7 +1455,6 @@ func statusJSON() -> [String: Any] {
     let front = frontmostApp()
     return [
         "accessibility": AXIsProcessTrusted(),
-        "screen_recording": CGPreflightScreenCaptureAccess(),
         "locked": screenLocked(),
         "frontmost": front?.localizedName ?? "",
         "frontmost_pid": Int(front?.processIdentifier ?? 0),
@@ -1899,18 +1487,6 @@ func handle(_ request: [String: Any]) -> [String: Any] {
                     ] as [String: Any]
                 }
             return ["id": id, "ok": true, "result": ["apps": apps]]
-        case "activate":
-            guard let name = request["app"] as? String else { throw BridgeError(message: "activate needs app") }
-            let app = try runningApp(name)
-            let before = frontmostPID()
-            guard app.activate(options: [.activateAllWindows]) else {
-                throw BridgeError(message: "the app refused activation")
-            }
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
-            return [
-                "id": id, "ok": true,
-                "result": focusFacts(before, app).merging(["frontmost": frontmostPID() == app.processIdentifier]) { _, b in b },
-            ]
         case "snapshot":
             guard let name = request["app"] as? String else { throw BridgeError(message: "snapshot needs app") }
             let snap = try snapshot(
@@ -1938,24 +1514,6 @@ func handle(_ request: [String: Any]) -> [String: Any] {
                 maxDepth: (request["depth"] as? Int) ?? DEFAULT_MAX_DEPTH
             )
             return ["id": id, "ok": true, "result": ["fingerprint": snap.fingerprint, "window": snap.window]]
-        case "capture":
-            guard let name = request["app"] as? String else { throw BridgeError(message: "capture needs app") }
-            let app = try runningApp(name)
-            var windowID = (request["window_id"] as? Int).map { CGWindowID($0) }
-            if let path = request["surface_path"] as? String {
-                guard let token = request["observation"] as? String, let old = observations[token],
-                    let surface = old.targets[path], try processInstance(app.processIdentifier) == old.instance else {
-                    throw BridgeError(message: "stale: the capture surface expired")
-                }
-                windowID = try surfaceWindow(app, surface.surface).id
-            }
-            return [
-                "id": id, "ok": true,
-                "result": try capture(
-                    app,
-                    width: (request["width"] as? Int) ?? 1000,
-                    quality: (request["quality"] as? Double) ?? 0.6, windowID: windowID),
-            ]
         case "act":
             var result = try execute(request)
             let delivery: Delivery = result["verified"] as? Bool == true ? .deliveredVerified : .deliveredUnverified
@@ -1991,7 +1549,7 @@ axbridge — accessibility snapshots and guarded execution for open-computer-use
   axbridge status                permissions and frontmost app, as JSON
   axbridge snapshot <app>        one indexed element table, as JSON
 
-Methods in serve mode: status, apps, activate, snapshot, act, ping.
+Methods in serve mode: status, apps, snapshot, fingerprint, act, ping.
 """
 
 switch arguments.first {

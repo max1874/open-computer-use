@@ -20,13 +20,9 @@ TARGETED = {
     "PASTE_TEXT": "Insert Unicode text at the observed field's current selection.",
     "SELECT_TEXT": "Select a UTF-16 character range in an observed text field.",
     "KEY_CHORD": "Send a keyboard editing command to an observed field.",
-    "DRAG": "Drag an observed element to another observed destination.",
     "SELECT": "Choose a value from a pop-up button's menu.",
     "MENU": "Run a menu-bar command by name, without opening the menu first.",
-    "CLICK": (
-        "Click an element the app will not act on directly — a row of a list, a song title, "
-        "a sidebar entry. Use it when the thing you want is in the table but offers no PRESS."
-    ),
+    "CLICK": "Select an observed row through the app's native selection API.",
     # INCREMENT and DECREMENT are deliberately absent. The bridge derives and
     # executes both, and adding them here is one line — it was added, measured,
     # and taken out again. Calculator publishes them on "Show Sidebar" and
@@ -35,21 +31,6 @@ TARGETED = {
     # against deepseek-flash: 6 of 6 runs correct in 6 operations without them,
     # 1 of 8 with them, the rest wandering into the 40-operation budget. The
     # element table was identical in both. See "What is not offered".
-}
-
-
-PIXEL_CONTROLS = {
-    "DRAG_POINT": ("Drag between two points in the screenshot's pixel coordinates.", {"op": "DRAG_POINT"}),
-    "CLICK_POINT": (
-        "Click a point in the screenshot, for something the window does not expose as an element. "
-        "Give click_x and click_y in the screenshot's own pixel coordinates.",
-        {"op": "CLICK_POINT"},
-    ),
-    "TYPE_KEYS": (
-        "Type text as keystrokes into whatever the app has focused. There is no field to aim at, "
-        "so only use this straight after clicking into one.",
-        {"op": "TYPE_KEYS"},
-    ),
 }
 
 
@@ -125,15 +106,11 @@ def scaffolding(candidates):
     return drop
 
 
-POINTER_OPERATIONS = {"CLICK", "DRAG"}
-
-
-def action_space(page, pixels=False, refused=(), pointer=False):
+def action_space(page, refused=()):
     """One index per element; each operation carries only the targets it can use.
 
     Returns the table shown to the model, the per-operation target maps, and the
-    targetless controls. `pixels` adds the screenshot operations, which are
-    offered only when the tree has too little in it to work from.
+    targetless controls. Only native background delivery is offered.
 
     `refused` is (operation, path) pairs the app turned down since the window
     last changed, and they are not offered again. Telling the model that a
@@ -150,8 +127,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
         operations = [
             op for op in source["operations"]
             if op in TARGETED and (
-                pointer or op not in POINTER_OPERATIONS
-                or (op == "CLICK" and source["index"] in background_clicks)
+                op != "CLICK" or source["index"] in background_clicks
             )
         ]
         if operations or source["role"] == "AXTextArea" or source.get("identity_proven") is False:
@@ -214,7 +190,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             else:
                 targets.setdefault(operation, {})[index] = {
                     "operation": operation,
-                    "op": "CLICK_BACKGROUND" if operation == "CLICK" and not pointer else operation,
+                    "op": operation,
                     "path": source["path"],
                     **identity,
                     "label": name,
@@ -231,15 +207,12 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             "label": item["label"],
         }
 
-    offered = dict(CONTROLS)
-    if pixels:
-        offered.update(PIXEL_CONTROLS)
-    controls = {name: {"operation": name, **body} for name, (_, body) in offered.items()}
+    controls = {name: {"operation": name, **body} for name, (_, body) in CONTROLS.items()}
     return elements, targets, controls
 
 
 def questions_for(targets, controls):
-    descriptions = {**CONTROLS, **PIXEL_CONTROLS}
+    descriptions = CONTROLS
     operations = {name: TARGETED[name] for name in targets}
     operations.update({name: descriptions[name][0] for name in controls})
     operations["DONE"] = "Every requirement is visibly satisfied in the current window."
@@ -262,9 +235,6 @@ def parameter_properties(operations, targets):
         for name in ("selection_start", "selection_length"):
             properties[name] = {"type": "integer", "enum": list(range(bound + 1)),
                                 "description": "UTF-16 offset or length, assuming SELECT_TEXT runs."}
-    if "DRAG" in operations:
-        properties["drag_destination"] = {"type": "string", "enum": sorted(targets["DRAG"]),
-                                           "description": "Destination element, assuming DRAG runs."}
     return properties
 
 
@@ -282,14 +252,6 @@ def head_properties(operations, targets):
             "enum": sorted(candidates),
             "description": f"{TARGET}\n\nThe operation assumed by this answer is {operation}.",
         }
-    # These four are speculative in the same way the target heads are: answer
-    # them as if their operation is the one that runs, whichever one you then
-    # choose. Saying "used only for CLICK_POINT" instead invited the answer
-    # null, and the shape makes that worse than it sounds — the keys are
-    # written in a fixed order with `operation` first now, but they used to be
-    # alphabetical, so a model emitted click_x before it had committed to an
-    # operation, wrote null because it had not chosen CLICK_POINT yet, and then
-    # chose CLICK_POINT. Every pixel decision came back with no point in it.
     for operation in ("TYPE_TEXT", "PASTE_TEXT"):
         if operation in targets:
             properties[operation.lower() + "_value"] = {
@@ -297,23 +259,6 @@ def head_properties(operations, targets):
                 "description": TEXT_VALUE + f" Answer as if {operation} is the operation that runs.",
             }
     properties.update(parameter_properties(operations, targets))
-    if "DRAG_POINT" in operations:
-        for name in ("drag_start_x", "drag_start_y", "drag_end_x", "drag_end_y"):
-            properties[name] = {"type": "number", "description": "Screenshot pixel coordinate assuming DRAG_POINT runs."}
-    if "CLICK_POINT" in operations:
-        point = "Answer as if CLICK_POINT is the operation that runs, whichever operation you choose."
-        properties["click_x"] = {
-            "type": ["number", "null"],
-            "description": f"Screenshot x of the point to click. {point}",
-        }
-        properties["click_y"] = {
-            "type": ["number", "null"],
-            "description": f"Screenshot y of the point to click. {point}",
-        }
-        properties["keys_value"] = {
-            "type": ["string", "null"],
-            "description": TEXT_VALUE + " Answer as if TYPE_KEYS is the operation that runs.",
-        }
     return properties
 
 
@@ -361,16 +306,6 @@ def object_format_instructions(properties):
         if "enum" in spec:
             lines.append(f'- "{name}": exactly one of {json.dumps(spec["enum"], ensure_ascii=False)}')
         elif "number" in kinds:
-            # A head typed number-or-null used to fall past this test and be
-            # described as a short string, which is what `click_x` and
-            # `click_y` are. The model was told to send text for a coordinate
-            # and `choose` then refused the text for not being a number, so on
-            # every provider that spells the shape out rather than enforcing it
-            # — which is the one the README recommends — the pixel path could
-            # choose CLICK_POINT and never once execute it.
-            # No mention of null here, even though the type permits it. This
-            # head is speculative, and the answer null is what "only used for"
-            # wording produced: never a point, on every request.
             lines.append(f'- "{name}": a number')
         elif name == "type_text_value":
             lines.append(f'- "{name}": a string, or null when the operation is not TYPE_TEXT')

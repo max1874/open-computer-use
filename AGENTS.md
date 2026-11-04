@@ -1,90 +1,21 @@
 # open-computer-use
 
-Read README.md and docs/design.md before editing. Keep the loop small:
+Read README.md and docs/design.md before editing. Keep one loop:
 window → indexed elements → operation + target → guarded execution → observe.
 
-- The input is one natural-language goal and one app. No per-app scripts, no
-  hardcoded field values, no coordinates.
-- One request chooses the operation and fills every target head on the same
-  observed state. Consume only the head matching the chosen operation.
-- Targets must map to observed elements and to operations those elements
-  actually support. Model output never becomes a path, a selector, a shell
-  command or executable code.
-- Never retry a mutation. Log execution before observing its result.
-- No screenshots on the tree path. Reaching for pixels because the reader is
-  lazy is a bug; the fallback is for windows that genuinely publish nothing,
-  and `desktop.sparseness` decides that by measurement, not by vibes.
-- Adding an operation costs accuracy on every task that does not need it. The
-  action space is the choice the model is making, so widening it is not free
-  even when the new operation works perfectly. Offering INCREMENT and DECREMENT
-  — two lines, correct, silent — took the calculator task from 6 of 6 runs to
-  1 of 8. Measure a new operation against a task that does not use it before
-  offering it, not only against one that does.
-- Before improving an operation, count how often it is offered. `SELECT` was
-  about to get a post-execution read-back when the count came in: of 40 pop-up
-  and menu buttons open across five apps, 0 exposed a menu item, so it is
-  offered zero times and the read-back would have run never. Count first, then
-  explain — the first version of this note blamed AppKit, and the sample turned
-  out to contain no AppKit pop-up at all. The code is inert rather than costly — an
-  element with no options drops `SELECT` from its own operation list, and an
-  operation with no targets is never put to the model — so this is a thing to
-  measure before working on, not a thing to delete.
-- A local change measured globally is not measured. Averaging a whole window
-  divided every real change by the unchanged majority around it, so pressing a
-  digit scored 0.30 against a threshold of 2 and a third of a window changing
-  scored 1.88. Both read as nothing happened. Score the parts and take the
-  loudest. Where the two mistakes cost differently, put the line nearer the
-  cheaper one and say which it is.
-- An element the app will not act on is still a place on the screen. Offering
-  only what publishes an accessibility action sounds conservative and is not:
-  in Music a song is an `AXStaticText` inside an anonymous cell inside an
-  anonymous row, and none of the three implements `AXPress`, so a window
-  publishing 14,274 nodes — 3,791 of them named text — was read as 72 elements
-  and not one song in the library could be named, let alone chosen. `CLICK`
-  aims at such an element's own rectangle. Keep it last: addressed to an
-  element like `PRESS`, delivered with the pointer like `CLICK_POINT`, so it
-  needs the app in front — a fact about this delivery, not about macOS — and is
-  offered only where the API offers nothing.
-- A static text's name is its value. Every other role answers to title,
-  description or a label element; that one does not, and reading it the same
-  way returned the whole contents of a window as anonymous.
-- Two competing budgets, never one. Content and controls truncate against
-  separate limits, because a library with four thousand song titles spends a
-  shared budget before the walk reaches the toolbar — and the table then looks
-  full while the controls that drive the app have fallen off the end of it.
-- When a window measures as sparse, suspect the reader before the app. The
-  first version of this project concluded from real measurements that Electron
-  apps publish nothing, and was wrong: the traversal stopped above the web
-  content. A measurement is evidence about the pair, not about the app.
-- Do not take the screen on the tree path. `activate` is opt-in. Keyboard
-  events go to the process, never to the system.
-- Looking and aiming are separate permissions. `pixels` photographs a window
-  that is behind everything else; `activate` is what offers the operations
-  aimed at that picture, because a click as delivered here needs the app in
-  front. Do not re-couple them.
-- Never activate an app to unlock a code path you are not going to execute.
-  Anything about what the model *would* choose — which operations are offered,
-  which point it names, how a prompt change lands — is `choose` on a background
-  capture, and costs the user nothing. Activating for that happened three times
-  in one session before it was written down here; each time the measurement
-  itself needed nothing but a picture.
-- Never widen the pixel path's guards. A click must be on a frontmost,
-  unoccluded window. A click aimed at a covered window lands in someone else's
-  — that happened here once, and the guard exists because of it.
-- The guard is part of the decision request, not a second call. Do not lower
-  the default threshold to make a demo smoother.
-- Verify outcomes by reading the window back. A `DONE` choice is not evidence,
-  and neither is a successful API response.
-- Keep README claims, measured numbers and what is actually verified in sync.
-  Numbers produced by `scripts/mock_model.py` must be labelled as such — it
-  proves the plumbing and nothing about model quality.
-- Credentials stay in `.env`, which stays ignored.
-- Do not commit or push unless asked.
+- Essential variables: the requested result is observed in the target app, and the entire task takes foreground focus zero times. Neither DONE nor an inactive endpoint proves acceptance. Observe macOS app-activation events independently across the same task interval; a transient activation followed by restoration still fails.
+- One app and one natural-language goal. No per-app scripts, invented coordinates or generated executable code.
+- The native bridge is the only executor. Do not reintroduce activation, mouse input, dragging, screenshots, a visual fallback or host-specific execution loops. Unsupported surfaces stop explicitly.
+- Keep app-local field focus and selection separate from activating an application. Keyboard events go only to the target process. Native row CLICK must refuse when its capability disappears; no physical fallback.
+- One request chooses the operation, every target head and risk on the same observed state. Consume only the matching head. The model may choose only observed targets and supported operations.
+- Never replay a mutation. Consume its decision before input and record delivery before post-action observation. Unknown delivery stops with history intact. Preserve returned focus facts even if read-back fails.
+- Capture-time uniqueness and a fresh target census guard execution. Unknown identities, incomplete reads and process replacement refuse input. Preserve secure classification before value reads, redacted history, separate AX deadlines and bridge replacement after transport failure.
+- Keep the action space small. INCREMENT/DECREMENT once changed Calculator from 6/6 to 1/8 despite identical observations; they stay unoffered. Measure any new operation against tasks that do not need it.
+- Preserve separate content/control publication budgets. A content-heavy window must not hide its toolbar. Static text names come from their values. Inspect traversal depth before declaring an Electron app inaccessible.
+- SELECT needs observed options. Do not expand it based on an unmeasured assumption that closed menus expose choices. Popup/menu-opening presses can activate apps and stay withheld.
+- No token-probability reconstruction, extra planner or new compatibility framework without a concrete product requirement.
+- Read the requested result back from the real app. Unit tests, source contracts and builds supplement that reading; they do not replace it. Local stand-in model runs prove plumbing only, never model accuracy.
+- Keep README claims and measured evidence in sync. Task windows and temporary services close in finally; never quit or close another user's documents to clean up an example.
+- Credentials stay in the ignored .env. Local verification runs the product; test/check suites run in CI only.
 
-Build: `scripts/build.sh`.
-Accessibility checks, no model calls: `python3 scripts/check_bridge.py`
-(add `--foreground` for the menu-bar checks).
-Whole loop offline: run `scripts/mock_model.py`, point `DECISION_BASE_URL` at
-it, then `examples/textedit.py`. It answers the pixel path too, against any
-window whose tree is empty enough to trigger it — the only way to exercise
-that path without a paid model, and the reason to keep it able to.
+Build: `scripts/build.sh`. The existing CI runs Python contracts, native-source regression guards and the Swift build. Do not change CI definitions without Max's explicit request.
