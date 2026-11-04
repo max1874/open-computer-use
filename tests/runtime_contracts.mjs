@@ -26,3 +26,15 @@ test('all editing keys stay inside the native field-command whitelist', () => {
   assert.ok(field.indexOf('guard editingKeys') < field.indexOf('try focus('));
   assert.doesNotMatch(field, /cmd\+tab|cmd\+q/);
 });
+
+test('editing requires a window editor at publication and delivery', () => {
+  const editor = source.slice(source.indexOf('func textEditor('), source.indexOf('let checkableRoles'));
+  assert.match(editor, /filename\(of: element, role: role\)\.isEmpty/);
+  assert.match(editor, /kAXWindowRole/);
+  const operations = source.slice(source.indexOf('func operations('), source.indexOf('func backgroundClickTarget('));
+  assert.match(operations, /if textEditor\(element, role: role, surface: surface\)/);
+  const execute = source.slice(source.indexOf('func executeAction('), source.indexOf('    case "PRESS":'));
+  assert.match(execute, /\["TYPE_TEXT", "PASTE_TEXT", "SELECT_TEXT", "KEY_CHORD"\]/);
+  assert.match(execute, /!textEditor\(element, role: string\(element, kAXRoleAttribute\), surface: target.surface\)/);
+  assert.match(execute, /throw BridgeError\(message: "target is not a supported window text editor"\)/);
+});

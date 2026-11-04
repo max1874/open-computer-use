@@ -340,6 +340,20 @@ let editableRoles: Set<String> = [
     kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField", "AXSecureTextField",
 ]
 
+/// Finder exposes a writable value for its item labels even outside rename
+/// mode. AXFilename identifies that surface without banning editable table cells.
+func filename(of element: AXUIElement, role: String) -> String {
+    guard editableRoles.contains(role), !secureField(element) else { return "" }
+    return string(element, "AXFilename").trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func textEditor(_ element: AXUIElement, role: String, surface: AXUIElement?) -> Bool {
+    // Finder's transient rename editor appears in AXWindows as a bare text
+    // field, parented directly to the app. It has no proven document window.
+    editableRoles.contains(role) && filename(of: element, role: role).isEmpty
+        && surface.map { string($0, kAXRoleAttribute) == kAXWindowRole } == true
+}
+
 let checkableRoles: Set<String> = [kAXCheckBoxRole, kAXRadioButtonRole, "AXSwitch", kAXMenuItemRole]
 
 /// Roles that carry content and answer to no accessibility action.
@@ -422,6 +436,8 @@ let subroleNames: [String: String] = [
 /// nearest static text inside it. This covers common labels, not the full
 /// accessible-name algorithm.
 func label(of element: AXUIElement, role: String) -> String {
+    let itemName = filename(of: element, role: role)
+    if !itemName.isEmpty { return itemName }
     let subrole = string(element, kAXSubroleAttribute)
     if let name = subroleNames[subrole] { return name }
     for name in [kAXTitleAttribute, kAXDescriptionAttribute] {
@@ -493,14 +509,15 @@ func popupOptions(_ element: AXUIElement, index: String) -> [[String: Any]] {
     return out
 }
 
-func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bool = false) -> [String] {
+func operations(for element: AXUIElement, role: String, surface: AXUIElement?, enabled: Bool, named: Bool = false) -> [String] {
     guard enabled else { return [] }
+    if !filename(of: element, role: role).isEmpty { return ["CLICK"] }
     var out: [String] = []
     let available = Set(actionNames(element))
     if available.contains(kAXPressAction), role != kAXPopUpButtonRole, role != "AXMenuButton" {
         out.append("PRESS")
     }
-    if editableRoles.contains(role) {
+    if textEditor(element, role: role, surface: surface) {
         if settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
         if settable(element, kAXFocusedAttribute) { out += ["PASTE_TEXT", "KEY_CHORD"] }
         if !secureField(element), settable(element, kAXSelectedTextRangeAttribute) { out.append("SELECT_TEXT") }
@@ -642,7 +659,7 @@ final class Walker {
                 if !text.isEmpty, texts.count < 400 { texts.append(text) }
             }
             let enabled = bool(element, kAXEnabledAttribute) ?? true
-            let ops = operations(for: element, role: role, enabled: enabled, named: !name.isEmpty)
+            let ops = operations(for: element, role: role, surface: scope, enabled: enabled, named: !name.isEmpty)
             if !ops.isEmpty || (role == kAXTextAreaRole) {
                 // Two budgets, because they compete and one of them is a list.
                 // Sharing a single budget means a library with four thousand
@@ -1216,6 +1233,12 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     guard bool(element, kAXEnabledAttribute) ?? true else {
         throw BridgeError(message: "\(current) is disabled")
     }
+
+    if ["TYPE_TEXT", "PASTE_TEXT", "SELECT_TEXT", "KEY_CHORD"].contains(op),
+        !textEditor(element, role: string(element, kAXRoleAttribute), surface: target.surface) {
+        throw BridgeError(message: "target is not a supported window text editor")
+    }
+    try requireReadable()
 
     switch op {
     case "PRESS":
