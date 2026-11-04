@@ -18,9 +18,37 @@ import Foundation
 
 // MARK: - Accessibility primitives
 
+// System-wide means this helper process, not the user's other AX clients.
+let axReadTimeout: Float = 0.25
+let axWriteTimeout: Float = 1.0
+AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), axReadTimeout)
+var axReadFailure: AXError?
+
+func recordRead(_ result: AXError) {
+    if result == .cannotComplete || result == .apiDisabled || result == .failure {
+        axReadFailure = result
+    }
+}
+
+func requireReadable() throws {
+    if let error = axReadFailure {
+        throw BridgeError(message: "accessibility read failed: \(describe(error)); observe again")
+    }
+}
+
+func secureField(_ element: AXUIElement) -> Bool {
+    string(element, kAXSubroleAttribute) == "AXSecureTextField"
+        || string(element, kAXRoleAttribute) == "AXSecureTextField"
+        || bool(element, "AXProtectedContent") == true
+}
+
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    guard axReadFailure == nil else { return nil }
+    // Redact before any value can enter labels, fingerprints, diagnostics or JSON.
+    if name == kAXValueAttribute, secureField(element) { return nil }
+    guard axReadFailure == nil else { return nil }
     var value: CFTypeRef?
-    AXUIElementCopyAttributeValue(element, name as CFString, &value)
+    recordRead(AXUIElementCopyAttributeValue(element, name as CFString, &value))
     return value
 }
 
@@ -41,8 +69,9 @@ func children(_ element: AXUIElement) -> [AXUIElement] {
 }
 
 func actionNames(_ element: AXUIElement) -> [String] {
+    guard axReadFailure == nil else { return [] }
     var names: CFArray?
-    AXUIElementCopyActionNames(element, &names)
+    recordRead(AXUIElementCopyActionNames(element, &names))
     return (names as? [String]) ?? []
 }
 
@@ -54,8 +83,9 @@ func frame(_ element: AXUIElement) -> CGRect {
 }
 
 func settable(_ element: AXUIElement, _ name: String) -> Bool {
+    guard axReadFailure == nil else { return false }
     var flag = DarwinBoolean(false)
-    AXUIElementIsAttributeSettable(element, name as CFString, &flag)
+    recordRead(AXUIElementIsAttributeSettable(element, name as CFString, &flag))
     return flag.boolValue
 }
 
@@ -109,18 +139,41 @@ func frontmostApp() -> NSRunningApplication? {
 
 // MARK: - Apps
 
-/// A failure, and whether the window was changed before it happened.
-///
-/// Most of these are pre-flight: a path that no longer resolves, an element
-/// that is disabled, a guard that refused. Nothing ran, and the caller can
-/// choose again freely. `TYPE_TEXT` is the exception — it empties the field
-/// before writing, so a read-back that does not match is a failure reported
-/// about a field that has already been changed. A caller told only "it failed"
-/// would leave that out of its record and choose again over a field it had
-/// itself emptied, so the distinction travels with the error.
+enum Delivery: String {
+    case notDelivered = "not_delivered"
+    case uncertain = "delivery_uncertain"
+    case deliveredUnverified = "delivered_unverified"
+    case deliveredVerified = "delivered_verified"
+
+    var disposition: [String: String] {
+        ["delivery": rawValue, "retry": self == .notDelivered ? "safe" : "unsafe"]
+    }
+}
+
 struct BridgeError: Error {
     let message: String
-    var acted: Bool = false
+    var delivery: Delivery = .notDelivered
+}
+
+func mutationError(_ result: AXError, _ message: String) -> BridgeError {
+    // A timeout can be a modal action that ran but never answered. Never resend it.
+    let refused: Set<AXError> = [.actionUnsupported, .attributeUnsupported, .illegalArgument,
+                                 .invalidUIElement, .notImplemented, .apiDisabled]
+    return BridgeError(message: message, delivery: refused.contains(result) ? .notDelivered : .uncertain)
+}
+
+func perform(_ element: AXUIElement, _ action: String) throws {
+    try requireReadable()
+    AXUIElementSetMessagingTimeout(element, axWriteTimeout)
+    defer { AXUIElementSetMessagingTimeout(element, 0) }
+    let result = AXUIElementPerformAction(element, action as CFString)
+    if result != .success { throw mutationError(result, "\(action) failed: \(describe(result))") }
+}
+
+func setAttribute(_ element: AXUIElement, _ name: String, _ value: CFTypeRef) -> AXError {
+    AXUIElementSetMessagingTimeout(element, axWriteTimeout)
+    defer { AXUIElementSetMessagingTimeout(element, 0) }
+    return AXUIElementSetAttributeValue(element, name as CFString, value)
 }
 
 func runningApp(_ query: String) throws -> NSRunningApplication {
@@ -174,7 +227,8 @@ func resolve(_ app: NSRunningApplication, _ path: String) throws -> AXUIElement 
     for part in path.split(separator: ".") {
         guard let index = Int(part) else { throw BridgeError(message: "bad path component \"\(part)\"") }
         let kids = children(element)
-        guard index < kids.count else {
+        try requireReadable()
+        guard index >= 0, index < kids.count else {
             throw BridgeError(message: "path \(path) is stale: child \(index) of \(kids.count) does not exist")
         }
         element = kids[index]
@@ -188,7 +242,7 @@ func resolve(_ app: NSRunningApplication, _ path: String) throws -> AXUIElement 
 /// misclassifies checkboxes and buttons, so the role list decides, not the
 /// presence of a settable value.
 let editableRoles: Set<String> = [
-    kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField",
+    kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField", "AXSecureTextField",
 ]
 
 let checkableRoles: Set<String> = [kAXCheckBoxRole, kAXRadioButtonRole, "AXSwitch", kAXMenuItemRole]
@@ -221,6 +275,7 @@ struct Element {
     var label: String
     var value: String
     var enabled: Bool
+    var secure: Bool
     var focused: Bool
     var checked: Bool?
     var selected: Bool?
@@ -240,6 +295,7 @@ struct Element {
             "operations": operations,
             "frame": [Int(frame.minX), Int(frame.minY), Int(frame.width), Int(frame.height)],
         ]
+        if secure { out["secure"] = true }
         if !subrole.isEmpty { out["subrole"] = subrole }
         if !identifier.isEmpty { out["identifier"] = identifier }
         if focused { out["focused"] = true }
@@ -303,7 +359,7 @@ func label(of element: AXUIElement, role: String) -> String {
 func containedText(_ element: AXUIElement, depth: Int = 3, pieces: Int = 4) -> String {
     var found: [String] = []
     func gather(_ node: AXUIElement, _ remaining: Int) {
-        guard remaining >= 0, found.count < pieces else { return }
+        guard remaining >= 0, found.count < pieces, !secureField(node) else { return }
         for child in children(node).prefix(8) {
             if found.count >= pieces { return }
             let role = string(child, kAXRoleAttribute)
@@ -386,7 +442,8 @@ final class Walker {
     }
 
     func walk(_ element: AXUIElement, path: String, depth: Int, maxDepth: Int) {
-        guard depth <= maxDepth else { return }
+        guard depth <= maxDepth, axReadFailure == nil else { return }
+        let secure = secureField(element)
         let role = string(element, kAXRoleAttribute)
         if role == kAXMenuBarRole { return }
         let rect = frame(element)
@@ -440,6 +497,7 @@ final class Walker {
                             label: name,
                             value: checked == nil ? value : "",
                             enabled: enabled,
+                            secure: secure,
                             focused: bool(element, kAXFocusedAttribute) ?? false,
                             checked: checked,
                             selected: bool(element, kAXSelectedAttribute),
@@ -452,7 +510,7 @@ final class Walker {
             }
         }
         // A collapsed or offscreen container still hides no children worth reading.
-        guard visible || depth == 0 || containerRoles.contains(role) else { return }
+        guard !secure, visible || depth == 0 || containerRoles.contains(role) else { return }
         for (i, child) in children(element).enumerated() {
             walk(child, path: path.isEmpty ? "\(i)" : "\(path).\(i)", depth: depth + 1, maxDepth: maxDepth)
         }
@@ -543,6 +601,7 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
     let app = try runningApp(query)
     let root = appElement(app)
     let windows = children(root).filter { string($0, kAXRoleAttribute) == kAXWindowRole }
+    try requireReadable()
     guard !windows.isEmpty else {
         throw BridgeError(message: "\(app.localizedName ?? query) has no accessible window (not drawn yet?)")
     }
@@ -575,6 +634,8 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
     // commands then would offer operations that cannot run.
     let active = frontmostPID() == app.processIdentifier
     let menus = includeMenus && active ? menuItems(app, limit: 200) : []
+    let windowTitle = string(window, kAXTitleAttribute)
+    try requireReadable()
     var text = walker.texts.joined(separator: "\n")
     if text.count > 6000 { text = String(text.prefix(6000)) + "…" }
 
@@ -582,7 +643,7 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
     // the app made. Geometry is deliberately excluded — a window that merely
     // moved has not changed state.
     let material =
-        (string(window, kAXTitleAttribute)) + "\u{1}"
+        windowTitle + "\u{1}"
         + walker.elements.map {
             "\($0.role)|\($0.label)|\($0.value)|\($0.enabled)|\($0.checked.map(String.init) ?? "")|\($0.selected.map(String.init) ?? "")"
         }.joined(separator: "\u{2}") + "\u{1}" + text
@@ -590,7 +651,7 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
         app: app.localizedName ?? query,
         pid: app.processIdentifier,
         bundle: app.bundleIdentifier ?? "",
-        window: string(window, kAXTitleAttribute),
+        window: windowTitle,
         windowFrame: bounds,
         elements: walker.elements,
         menus: menus,
@@ -656,6 +717,7 @@ func scroll(_ element: AXUIElement, pid: pid_t, amount: Int) throws {
         scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(amount), wheel2: 0, wheel3: 0)
     else { throw BridgeError(message: "could not build a scroll event") }
     event.location = CGPoint(x: rect.midX, y: rect.midY)
+    try requireReadable()
     event.postToPid(pid)
 }
 
@@ -663,7 +725,7 @@ func scroll(_ element: AXUIElement, pid: pid_t, amount: Int) throws {
 func mainScrollArea(_ window: AXUIElement) -> AXUIElement? {
     var best: (AXUIElement, CGFloat)?
     func visit(_ element: AXUIElement, depth: Int) {
-        guard depth < 12 else { return }
+        guard depth < 12, axReadFailure == nil else { return }
         if string(element, kAXRoleAttribute) == kAXScrollAreaRole {
             let rect = frame(element)
             let area = rect.width * rect.height
@@ -703,6 +765,7 @@ func pressKey(_ combo: String, pid: pid_t) throws {
     else { throw BridgeError(message: "could not build a key event") }
     down.flags = flags
     up.flags = flags
+    try requireReadable()
     down.postToPid(pid)
     sleepMs(20)
     up.postToPid(pid)
@@ -999,6 +1062,7 @@ func postClick(
         event.setIntegerValueField(.mouseEventClickState, value: 1)
         return event
     }
+    try requireReadable()
     for (type, event) in zip(sequence, events) {
         event.post(tap: .cghidEventTap)
         sleepMs(type == .mouseMoved ? 30 : 40)
@@ -1033,8 +1097,7 @@ func pressMenuPath(_ app: NSRunningApplication, _ path: String) throws -> String
     guard bool(element, kAXEnabledAttribute) ?? true else {
         throw BridgeError(message: "menu item \(path) is disabled")
     }
-    let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
-    guard result == .success else { throw BridgeError(message: "menu press failed: \(describe(result))") }
+    try perform(element, kAXPressAction)
     return describe(element)
 }
 
@@ -1110,6 +1173,11 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
 
     guard let path = request["path"] as? String else { throw BridgeError(message: "\(op) needs an element path") }
     let element = try resolve(app, path)
+    let secure = secureField(element)
+    try requireReadable()
+    if let expected = request["expect_secure"] as? Bool, expected != secure {
+        throw BridgeError(message: "stale: the field's secure status changed; observe again")
+    }
     let current = describe(element)
     // A label alone does not identify a control: a list that reordered can put
     // a different row with the same name under the same path. Role and
@@ -1156,9 +1224,18 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         guard available.contains(kAXPressAction) else {
             throw BridgeError(message: "\(current) offers no AXPress; it has \(available)")
         }
-        let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
-        guard result == .success else { throw BridgeError(message: "press failed: \(describe(result))") }
-        return ["ok": true, "detail": current, "mechanism": "AXPress"].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        let checkedBefore = checkableRoles.contains(string(element, kAXRoleAttribute))
+            ? attr(element, kAXValueAttribute) as? NSNumber : nil
+        try perform(element, kAXPressAction)
+        let checkedAfter = checkedBefore == nil ? nil : attr(element, kAXValueAttribute) as? NSNumber
+        let verified: Bool
+        if let checkedBefore, let checkedAfter {
+            verified = checkedBefore.boolValue != checkedAfter.boolValue
+        } else {
+            verified = false
+        }
+        return ["ok": true, "detail": current, "mechanism": "AXPress", "verified": verified]
+            .merging(focusFacts(focusBefore, app)) { a, _ in a }
     case "CLICK":
         // For elements the accessibility API will not act on. A song in Music
         // is a static text: it has a name, a rectangle and no AXPress, and
@@ -1188,13 +1265,17 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         // Actions the element published about itself. Asking the app to step
         // its own control moves nothing on screen and aims at nothing.
         let action = op == "INCREMENT" ? kAXIncrementAction : kAXDecrementAction
-        let result = AXUIElementPerformAction(element, action as CFString)
-        guard result == .success else { throw BridgeError(message: "\(op) failed: \(describe(result))") }
+        try perform(element, action)
         return ["ok": true, "detail": current, "mechanism": action].merging(focusFacts(focusBefore, app)) { a, _ in a }
     case "TYPE_TEXT":
         guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_TEXT needs text") }
         let wanted = withoutScaffolding(text)
-        let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        try requireReadable()
+        let focused = setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        if focused != .success {
+            let failure = mutationError(focused, "field focus failed: \(describe(focused))")
+            if failure.delivery == .uncertain { throw failure }
+        }
 
         // This operation means "replace the whole value", and writing the value
         // does not mean that everywhere. A native text field replaces. A rich
@@ -1222,69 +1303,86 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         // The keys go only to an element this process has just confirmed is the
         // one the app is focused on. A select-all and a delete aimed anywhere
         // else would destroy something nobody asked about.
-        var erased = false
-        if focused == .success, focusedElement(pid).map({ CFEqual($0, element) }) == true {
-            try pressKey("cmd+a", pid: pid)
-            sleepMs(20)
-            try pressKey("delete", pid: pid)
-            sleepMs(40)
-            erased = true
-        }
-
-        var mechanism = "AXValue"
-        let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef)
-        if result != .success {
-            guard focused == .success else {
-                throw BridgeError(
-                    message: "the field refused both the value (\(describe(result))) and focus "
-                        + "(\(describe(focused))); typing now would go somewhere unknown")
+        var delivered = focused == .success
+        do {
+            if focused == .success, focusedElement(pid).map({ CFEqual($0, element) }) == true {
+                try pressKey("cmd+a", pid: pid)
+                delivered = true
+                sleepMs(20)
+                try pressKey("delete", pid: pid)
+                sleepMs(40)
             }
-            typeText(text, pid: pid)
-            mechanism = "CGEvent→pid"
-        }
 
-        // Read back and require the value to actually be the value. A field
-        // that truncated, decorated or ignored the write is not a success, and
-        // a substring test would call two of those three a success.
-        //
-        // A native field holds the new value the instant the write returns and
-        // matches on the first read, paying nothing for this loop. A web
-        // composer applies the write through its own render and is still
-        // showing the old contents 25 ms later, so reading once would call a
-        // write that worked a write that failed.
-        var after = string(element, kAXValueAttribute)
-        var settled = withoutScaffolding(after)
-        var waited = 0
-        while settled != wanted, waited < 400 {
-            sleepMs(25)
-            waited += 25
-            after = string(element, kAXValueAttribute)
-            settled = withoutScaffolding(after)
+            var mechanism = "AXValue"
+            try requireReadable()
+            let result = setAttribute(element, kAXValueAttribute, text as CFTypeRef)
+            if result != .success {
+                let failure = mutationError(result, "value write failed: \(describe(result))")
+                if failure.delivery == .uncertain { throw failure }
+                guard focused == .success,
+                    focusedElement(pid).map({ CFEqual($0, element) }) == true else {
+                    throw BridgeError(
+                        message: "the field refused both the value (\(describe(result))) and focus "
+                            + "(\(describe(focused))); typing now would go somewhere unknown")
+                }
+                try requireReadable()
+                typeText(text, pid: pid)
+                mechanism = "CGEvent→pid"
+            }
+            delivered = true
+
+            // Read back and require the value to actually be the value. A field
+            // that truncated, decorated or ignored the write is not a success, and
+            // a substring test would call two of those three a success.
+            //
+            // A native field holds the new value the instant the write returns and
+            // matches on the first read, paying nothing for this loop. A web
+            // composer applies the write through its own render and is still
+            // showing the old contents 25 ms later, so reading once would call a
+            // write that worked a write that failed.
+            if secure {
+                return ["detail": current, "mechanism": mechanism, "verified": false,
+                        "unverified": "secure field values are never read back"]
+                    .merging(focusFacts(focusBefore, app)) { a, _ in a }
+            }
+            var after = string(element, kAXValueAttribute)
+            var settled = withoutScaffolding(after)
+            var waited = 0
+            while settled != wanted, waited < 400 {
+                sleepMs(25)
+                waited += 25
+                after = string(element, kAXValueAttribute)
+                settled = withoutScaffolding(after)
+            }
+            if axReadFailure != nil {
+                throw BridgeError(message: "the value was sent but its read-back failed", delivery: .deliveredUnverified)
+            }
+            if settled == wanted {
+                return ["ok": true, "detail": describe(element), "mechanism": mechanism, "verified": true].merging(focusFacts(focusBefore, app)) { a, _ in a }
+            }
+            // Some fields expose no readable value at all. That is not a failure,
+            // but it is not confirmation either, and the caller must be told which.
+            if after.isEmpty, !settable(element, kAXValueAttribute) {
+                return [
+                    "ok": true, "detail": describe(element), "mechanism": mechanism, "verified": false,
+                    "unverified": "this field exposes no readable value, so the write could not be confirmed",
+                ].merging(focusFacts(focusBefore, app)) { a, _ in a }
+            }
+            // The field was emptied on the way in, so this failure is about a
+            // field this call has already changed, not a pre-flight refusal.
+            throw BridgeError(
+                message: "the field did not take the value: wanted \"\(wanted)\", holds \"\(settled)\"",
+                delivery: .deliveredUnverified)
+        } catch let error as BridgeError {
+            throw BridgeError(message: error.message, delivery: delivered ? .deliveredUnverified : error.delivery)
         }
-        if settled == wanted {
-            return ["ok": true, "detail": describe(element), "mechanism": mechanism, "verified": true].merging(focusFacts(focusBefore, app)) { a, _ in a }
-        }
-        // Some fields expose no readable value at all. That is not a failure,
-        // but it is not confirmation either, and the caller must be told which.
-        if after.isEmpty, !settable(element, kAXValueAttribute) {
-            return [
-                "ok": true, "detail": describe(element), "mechanism": mechanism, "verified": false,
-                "unverified": "this field exposes no readable value, so the write could not be confirmed",
-            ].merging(focusFacts(focusBefore, app)) { a, _ in a }
-        }
-        // The field was emptied on the way in, so this failure is about a
-        // field this call has already changed. `acted` says so; see BridgeError.
-        throw BridgeError(
-            message: "the field did not take the value: wanted \"\(wanted)\", holds \"\(settled)\"",
-            acted: erased || result == .success || mechanism == "CGEvent→pid")
     case "SELECT":
         guard let choice = request["option"] as? Int else { throw BridgeError(message: "SELECT needs an option") }
         var pool = children(element)
         if pool.count == 1, string(pool[0], kAXRoleAttribute) == kAXMenuRole { pool = children(pool[0]) }
-        guard choice < pool.count else { throw BridgeError(message: "option \(choice) is gone; re-observe") }
+        guard choice >= 0, choice < pool.count else { throw BridgeError(message: "option \(choice) is gone; re-observe") }
         let item = pool[choice]
-        let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
-        guard result == .success else { throw BridgeError(message: "select failed: \(describe(result))") }
+        try perform(item, kAXPressAction)
         return ["ok": true, "detail": describe(item), "mechanism": "AXPress(option)"].merging(focusFacts(focusBefore, app)) { a, _ in a }
     default:
         throw BridgeError(message: "unknown operation \(op)")
@@ -1307,6 +1405,7 @@ func statusJSON() -> [String: Any] {
 func handle(_ request: [String: Any]) -> [String: Any] {
     let id = request["id"] as? Int ?? 0
     let method = request["method"] as? String ?? ""
+    axReadFailure = nil
     do {
         switch method {
         case "status":
@@ -1368,16 +1467,21 @@ func handle(_ request: [String: Any]) -> [String: Any] {
                     quality: (request["quality"] as? Double) ?? 0.6),
             ]
         case "act":
-            return ["id": id, "ok": true, "result": try execute(request)]
+            var result = try execute(request)
+            let delivery: Delivery = result["verified"] as? Bool == true ? .deliveredVerified : .deliveredUnverified
+            result["disposition"] = delivery.disposition
+            return ["id": id, "ok": true, "result": result]
         case "ping":
             return ["id": id, "ok": true, "result": ["pong": true]]
         default:
             throw BridgeError(message: "unknown method \"\(method)\"")
         }
     } catch let error as BridgeError {
-        return ["id": id, "ok": false, "error": error.message, "acted": error.acted]
+        return ["id": id, "ok": false, "error": error.message,
+                "acted": error.delivery != .notDelivered, "disposition": error.delivery.disposition]
     } catch {
-        return ["id": id, "ok": false, "error": "\(error)"]
+        let delivery: Delivery = method == "act" ? .uncertain : .notDelivered
+        return ["id": id, "ok": false, "error": "\(error)", "disposition": delivery.disposition]
     }
 }
 

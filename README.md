@@ -119,6 +119,36 @@ Pass `approve=lambda decision: ...` to answer programmatically, or raise
 This costs no extra round trip. A separate safety reviewer is a second model
 call on the critical path; a rating in the same structured answer is free.
 
+## Delivery is not task completion
+
+Each bridge action result and agent history entry carries `disposition`:
+
+| `delivery` | Evidence | `retry` |
+| --- | --- | --- |
+| `not_delivered` | Refused before input was sent | `safe` |
+| `delivery_uncertain` | Input may have reached the app; no reliable reply | `unsafe` |
+| `delivered_unverified` | Input was sent; the resulting state is unconfirmed | `unsafe` |
+| `delivered_verified` | A value read-back matched, or a pressed checkbox changed state | `unsafe` |
+
+Bridge exceptions expose the same dictionary as `error.disposition`. Existing
+exception types remain supported. `safe` describes non-delivery, not permission
+to replay a decision: the agent consumes each decision once. An uncertain action
+stays in history and stops the run for inspection. A successful `AXPress` alone
+is `delivered_unverified`; even a verified action does not establish that the
+whole goal succeeded. That still needs an outcome check.
+
+A broken pipe, incomplete reply, malformed reply or reply-ID mismatch discards
+the helper. The next request starts a fresh one; the failed request is never
+replayed. AX reads have a 250 ms per-message timeout and writes have 1 second.
+The Python request deadline also bounds a traversal that makes many AX calls.
+A timed-out AX read fails the observation instead of publishing an empty tree.
+
+Secure text fields publish `secure: true` and an empty value. The bridge never
+reads their value or descendants; generated input is omitted from the inspector,
+decision history and action history. Writing remains available, but its result
+is deliberately unverified. This does not redact secrets a caller explicitly
+places in the goal, or cover the separate Codex tree-text executor.
+
 ## Try it
 
 ```bash

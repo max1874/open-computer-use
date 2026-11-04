@@ -17,12 +17,21 @@ ROOT = Path(__file__).resolve().parent
 BUILD = ROOT.parent / "scripts" / "build.sh"
 
 
+def disposition(delivery):
+    """Retryability follows delivery, never an API's success flag."""
+    return {"delivery": delivery, "retry": "safe" if delivery == "not_delivered" else "unsafe"}
+
+
 class StaleWindow(Exception):
     """The window changed between the decision and its execution."""
+
+    disposition = disposition("not_delivered")
 
 
 class BridgeError(RuntimeError):
     """The bridge refused an operation. Nothing was executed."""
+
+    disposition = disposition("not_delivered")
 
 
 class UnknownOutcome(RuntimeError):
@@ -34,18 +43,17 @@ class UnknownOutcome(RuntimeError):
     sending it again.
     """
 
+    disposition = disposition("delivery_uncertain")
+
 
 class Executed(UnknownOutcome):
-    """The operation ran, changed the window, and could not be confirmed.
+    """Input was delivered, but the resulting state could not be confirmed.
 
-    Not a variety of "nothing happened". `TYPE_TEXT` empties the field before
-    writing to it, so a read-back that does not match is a failure reported
-    about a field this call has already emptied. Treating that as a refusal
-    left the step out of the agent's history entirely and offered the model a
-    fresh choice over a field it had itself cleared, with no record that
-    anything had been done to it. A subclass, so every caller that already
-    knows not to retry an uncertain outcome covers this one too.
+    This includes a field cleared before a later write failed. It is never a
+    refusal, and callers must not repeat the operation.
     """
+
+    disposition = disposition("delivered_unverified")
 
 
 def binary():
@@ -63,79 +71,115 @@ class Bridge:
     """A line-delimited JSON-RPC pipe to the Swift helper."""
 
     def __init__(self):
-        self.process = subprocess.Popen(
-            [binary(), "serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        self.executable = binary()
         self.lock = threading.Lock()
         self.counter = 0
+        self.closed = False
+        self.process = None
         self.selector = selectors.DefaultSelector()
+        self.buffer = bytearray()
+
+    def _start(self):
+        self.process = subprocess.Popen(
+            [self.executable, "serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
 
+    def _stop(self):
+        if self.process is None:
+            return
+        self.selector.unregister(self.process.stdout)
+        # A timed-out helper must not finish an old request on a new pipe.
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait()
+        self.process.stdin.close()
+        self.process.stdout.close()
+        self.process = None
+        self.buffer.clear()
+
     def _readline(self, timeout):
-        """One line, or None if it did not arrive in time."""
-        if self.selector.select(timeout):
-            return self.process.stdout.readline()
-        return None
+        """Read a whole frame within the deadline, including partial replies."""
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.selector.select(remaining):
+                raise TimeoutError(f"no complete reply within {timeout}s")
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                raise EOFError("the bridge closed the pipe")
+            self.buffer.extend(chunk)
+        line, _, rest = self.buffer.partition(b"\n")
+        self.buffer = bytearray(rest)
+        return line
 
     def call(self, method, timeout=20, mutating=False, **body):
         with self.lock:
-            if self.process.poll() is not None:
-                raise BridgeError("the accessibility bridge exited before the request was sent")
+            if self.closed:
+                raise BridgeError("the accessibility bridge is closed")
+            if self.process is not None and self.process.poll() is not None:
+                self._stop()
+            if self.process is None:
+                try:
+                    self._start()
+                except OSError as error:
+                    raise BridgeError(f"could not start the accessibility bridge: {error}") from None
             self.counter += 1
             request = {"id": self.counter, "method": method, **body}
+            payload = (json.dumps(request) + "\n").encode()
+            # Once a write starts, a transport failure cannot prove non-delivery.
             try:
-                self.process.stdin.write(json.dumps(request) + "\n")
+                if self.process.stdin.write(payload) != len(payload):
+                    raise OSError("incomplete request write")
                 self.process.stdin.flush()
-            except (OSError, ValueError) as error:
-                # Never left this process, so nothing can have happened.
-                raise BridgeError(f"the request was not sent: {error}") from None
-            # Past this line the operation may have run, whatever comes back.
-            line = self._readline(timeout)
-
-        if line is None or line == "":
-            lost = "timed out" if line is None else "the bridge closed the pipe"
+                answer = json.loads(self._readline(timeout))
+                if not isinstance(answer, dict) or answer.get("id") != request["id"]:
+                    raise ValueError("the reply does not match the request")
+                if not isinstance(answer.get("ok"), bool):
+                    raise ValueError("the reply has no outcome")
+                if answer["ok"] and not isinstance(answer.get("result"), dict):
+                    raise ValueError("the reply has no result")
+                envelope = answer if not answer["ok"] else answer["result"]
+                reported = envelope.get("disposition")
+                if "disposition" in envelope and (
+                    not isinstance(reported, dict) or reported.get("delivery") not in {
+                        "not_delivered", "delivery_uncertain", "delivered_unverified", "delivered_verified"
+                    }
+                ):
+                    raise ValueError("the reply has an invalid delivery outcome")
+            except (OSError, EOFError, TimeoutError, ValueError) as error:
+                self._stop()
+                failure = UnknownOutcome if mutating else BridgeError
+                raise failure(
+                    f"{method}: {error}. The bridge was reset. "
+                    + ("It may have run; observe before doing anything else." if mutating else "Observe again.")
+                ) from None
+            if not answer["ok"]:
+                message = answer.get("error", "unknown bridge error")
+                delivery = answer.get("disposition", {}).get("delivery")
+                if delivery == "delivery_uncertain":
+                    raise UnknownOutcome(message)
+                if delivery == "delivered_unverified" or answer.get("acted"):
+                    raise Executed(message)
+                raise BridgeError(message)
+            result = answer["result"]
             if mutating:
-                raise UnknownOutcome(
-                    f"{method} was sent and {lost} after {timeout}s. It may have run. "
-                    "Observe the window rather than sending it again."
-                )
-            raise BridgeError(f"{method} {lost} after {timeout}s")
-        answer = json.loads(line)
-        if answer.get("id") != request["id"]:
-            # The pipe is one request at a time; a mismatch means it desynced.
-            raise UnknownOutcome(
-                f"expected a reply to {request['id']} and got {answer.get('id')}; the bridge is out of step"
-            )
-        if not answer.get("ok"):
-            message = answer.get("error", "unknown bridge error")
-            # Most bridge failures are pre-flight — a path that no longer
-            # resolves, a disabled element, a guard that refused — and nothing
-            # ran. The bridge says when that is not true, and it is not true
-            # for the one operation that clears a field before filling it.
-            if answer.get("acted"):
-                raise Executed(message)
-            raise BridgeError(message)
-        return answer["result"]
+                # Older AXBRIDGE_BIN overrides have no structured delivery field.
+                result.setdefault("disposition", disposition(
+                    "delivered_verified" if result.get("verified") is True else "delivered_unverified"
+                ))
+            return result
 
     def close(self):
-        try:
-            self.selector.close()
-        except Exception:
-            pass
-        if self.process.poll() is None:
-            try:
-                self.process.stdin.close()
-            except OSError:
-                pass
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        with self.lock:
+            if not self.closed:
+                self._stop()
+                self.selector.close()
+                self.closed = True
 
 
 # How long to let the interface settle before the next observation. A menu or a
@@ -353,6 +397,8 @@ class Desktop:
             for guard in ("expect", "expect_role", "expect_id"):
                 if action.get(guard):
                     request[guard] = action[guard]
+        if "secure" in action:
+            request["expect_secure"] = action["secure"]
         if "menu" in action:
             request["menu"] = action["menu"]
         if "option" in action:

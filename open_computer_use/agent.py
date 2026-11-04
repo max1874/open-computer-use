@@ -9,6 +9,7 @@ from .desktop import (
     Executed,
     StaleWindow,
     UnknownOutcome,
+    disposition,
     thumbnail_difference,
 )
 from .model import action_space, choose, field_context, field_text
@@ -45,6 +46,15 @@ def window_changes(before, after, limit=3):
     if gone and len(moved) < limit:
         moved.append(f"{gone} elements went away")
     return "; ".join(moved)
+
+
+def public_decision(decision):
+    """Keep secure-field input out of the inspector and decision history."""
+    if decision and (decision.get("action") or {}).get("secure"):
+        text = decision.get("text")
+        reason = decision["risk_reason"]
+        return {**decision, "text": None, "risk_reason": reason.replace(text, "[redacted]") if text else reason}
+    return decision
 
 
 class Agent:
@@ -141,6 +151,7 @@ class Agent:
         elements, targets, _ = action_space(self.state["page"])
         return {
             **{k: v for k, v in self.state.items() if k != "page"},
+            "decision": public_decision(self.state["decision"]),
             "window": {
                 k: self.state["page"][k] for k in ("app", "window", "fingerprint", "text", "truncated")
             },
@@ -263,7 +274,7 @@ class Agent:
             )
             state["decisions"].append(
                 {
-                    **{k: v for k, v in decision.items() if k != "offered"},
+                    **{k: v for k, v in public_decision(decision).items() if k != "offered"},
                     "fingerprint": state["page"]["fingerprint"],
                     "elapsed_ms": self._elapsed(),
                 }
@@ -320,6 +331,7 @@ class Agent:
                 return self.snapshot()
 
             action = decision["action"]
+            secure = bool(action and action.get("secure"))
             text, helper = None, None
             # Failing to produce a value is a failure of the step, not of the
             # run. It happens before anything is executed — the field is
@@ -346,6 +358,7 @@ class Agent:
                             text, helper = field_text(context)
                             self.pending_text = (context, text, helper)
             except ValueError as error:
+                detail = "The secure field value could not be prepared; nothing was typed." if secure else str(error)
                 state["elapsed_ms"] = self._elapsed()
                 state["history"].append(
                     {
@@ -355,7 +368,8 @@ class Agent:
                         "label": action.get("label", operation) if action else operation,
                         "text": None,
                         "outcome": "not attempted",
-                        "detail": str(error),
+                        "disposition": disposition("not_delivered"),
+                        "detail": detail,
                         "path": action.get("path") if action else None,
                         "risk": decision["risk"],
                         "window_changed": False,
@@ -368,12 +382,12 @@ class Agent:
                 stuck = len(recent) == 3 and all(h.get("window_changed") is False for h in recent)
                 state["status"] = "blocked" if stuck else "ready"
                 if stuck:
-                    state["note"] = str(error)
+                    state["note"] = detail
                 return self.snapshot()
 
             if operation == "WAIT":
                 time.sleep(0.15)
-                result = {"detail": "waited", "mechanism": "sleep"}
+                result = {"detail": "waited", "mechanism": "sleep", "disposition": disposition("not_delivered")}
             else:
                 try:
                     result = self.desktop.act(action, page, text=text)
@@ -401,8 +415,10 @@ class Agent:
                             "operation": operation,
                             "target": decision["target"],
                             "label": action.get("label", operation) if action else operation,
-                            "text": text,
+                            "text": None if secure else text,
+                            "secure": secure,
                             "outcome": "executed, unconfirmed" if certain else "unknown",
+                            "disposition": error.disposition,
                             "detail": str(error),
                             "risk": decision["risk"],
                             "elapsed_ms": state["elapsed_ms"],
@@ -414,7 +430,7 @@ class Agent:
                         pass
                     state["status"] = "blocked"
                     state["note"] = (
-                        f"{operation} changed the window and could not be confirmed. "
+                        f"{operation} was delivered but its result could not be confirmed. "
                         f"Check the window before running anything else."
                         if certain
                         else f"{operation} may or may not have run. Check the window before running anything else."
@@ -440,8 +456,10 @@ class Agent:
                             "operation": operation,
                             "target": decision["target"],
                             "label": action.get("label", operation) if action else operation,
-                            "text": text,
+                            "text": None if secure else text,
+                            "secure": secure,
                             "outcome": "failed",
+                            "disposition": error.disposition,
                             "detail": str(error),
                             "path": action.get("path") if action else None,
                             "risk": decision["risk"],
@@ -486,14 +504,16 @@ class Agent:
                     "operation": operation,
                     "target": decision["target"],
                     "label": action.get("label", operation) if action else operation,
-                    "text": text,
+                    "text": None if secure else text,
+                    "secure": secure,
+                    "disposition": result["disposition"],
                     "mechanism": result.get("mechanism"),
                     "detail": result.get("detail"),
                     "took_focus": result.get("took_focus", False),
                     "verified_by_app": result.get("verified"),
                     "confidence": decision["confidence"],
                     "risk": decision["risk"],
-                    "risk_reason": decision["risk_reason"],
+                    "risk_reason": public_decision(decision)["risk_reason"],
                     "latency_ms": decision["latency_ms"],
                     "text_helper": helper["model"] if helper else None,
                     "usage": decision["usage"],
