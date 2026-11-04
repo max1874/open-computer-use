@@ -99,6 +99,8 @@ One app per run, including its accessible windows and open menus. Publication bu
 
 `examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
 
+[The background acceptance runner](evals/README.md) retains the 16 legacy task definitions, reads real app results independently and requires a complete activation-event record through cleanup. It preserves already-running user apps and records unavailable cases explicitly; historical scores are not current results.
+
 `scripts/mock_model.py` is a loopback stand-in for exercising transport and execution without paid model calls. It proves no model intelligence. Unit and source-contract tests run in the existing CI, together with the Swift build; they do not replace real background task acceptance.
 
 ## Read the implementation
