@@ -1,748 +1,114 @@
 # open-computer-use ⌘
 
-Open Computer Use is an open-source computer-use agent for macOS that drives apps through the accessibility tree.
+A macOS agent that completes tasks through the accessibility tree while you keep using another app.
 
-<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="The agent presses numbered elements in a Calculator left in the background to compute 12 × 34"></a>
+<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="Background Calculator computing 12 × 34"></a>
 
-<sub>A recorded demo from [max1874.com/open-computer-use](https://max1874.com/open-computer-use/), where you can try it yourself.</sub>
+Give it one app and one natural-language goal. Each observation produces a numbered table of the controls the app actually exposes. One model request chooses an operation, its observed target, the text to enter and the risk rating. The native bridge executes once, then reads the app again.
 
-**A macOS computer-use agent with interchangeable model backends and a dynamic, indexed action space.**
+**Acceptance means the requested result is observed in the app and the run never takes foreground focus.** A model saying `DONE`, an API success or an unchanged frontmost PID at two sample points does not establish that.
 
-Run it with an OpenAI-compatible model or the optional Jev backend. The macOS
-accessibility bridge and execution loop run independently of Codex.
+## Run
 
-The tree first: no screenshots, no coordinates, and it works on a window you
-are not looking at. Pixels only when an app publishes nothing — and then it
-says so, and takes the screen to do it.
+Requires macOS, Python 3.11+, Swift and Accessibility permission for the terminal or app launching the bridge. No Screen Recording permission is used.
 
-A macOS port of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast), which
-put the same idea on the web: give the model a numbered table of what it can
-actually do, and let it **choose** rather than generate. On the desktop the
-table comes from the accessibility tree instead of the DOM — the same tree a
-screen reader uses, which every native app already publishes.
-
-```text
-[1] TextArea    Untitled            · this line should be replaced
-[2] Button      Close window
-[3] CheckBox    Wrap to page        · checked
-[4] PopUpButton Paper size          · A4
-[m7] Format > Make Rich Text
-```
-
-Elements the app does not expose an operation for never appear. A checkbox is
-never offered as a place to type. A disabled button is not a choice.
-
-## The loop
-
-```text
-                       one request
-                     ┌──────────────────────────────┐
-accessibility tree → │ operation                    │
-  → element table    │ press_target                 │
-                     │ type_text_target + its value │
-                     │ select_target / menu_target  │
-                     │ risk                         │
-                     └───────────────┬──────────────┘
-                   use the head that matches the operation
-                                     │
-                     PRESS [2] ──────┤──→ AXPress, by path
-                 TYPE_TEXT [1] ──────┤──→ AXValue, no keystrokes
-                      MENU [m7] ─────┘──→ the command, menu still closed
-                                     │
-                              observe again
-```
-
-Operations: `PRESS`, `TYPE_TEXT`, `SELECT`, `MENU`, `CLICK`, `SCROLL_UP`,
-`SCROLL_DOWN`, `PASTE_TEXT`, `SELECT_TEXT`, `KEY_CHORD`, `DRAG`,
-`PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
-
-Snapshots include the app's accessible windows and open menus. Each indexed
-field belongs to one window. `SELECT_TEXT` uses UTF-16 offsets; `PASTE_TEXT`
-inserts at its selection; `TYPE_TEXT` replaces the whole value. Editing commands
-are limited to an explicit whitelist. Select All uses the native selection API
-when available; other keyboard commands depend on the application's bindings.
-Unicode insertion uses native selected-text writes, then a temporary pasteboard
-fallback that restores the clipboard unless another app has changed it.
-
-`DRAG` chooses source and destination from the observed table. Sparse windows
-also offer `DRAG_POINT`, bound to the screenshot's window identity, size and
-coordinate scale. Both use the real pointer and require `activate=True`, the
-app in front and an uncovered path. They report delivery; the caller must read
-the application back to establish that the drag achieved its goal.
-
-`CLICK` is addressed to an element out of the same table as `PRESS`. When its
-nearest row exposes native selection, it selects that row without taking focus
-or moving the pointer. This navigates System Settings' Wi-Fi and Appearance
-sidebar entries in the background. Other targets use the real pointer and are
-offered only with `activate`, with the same foreground and occlusion guards as
-the screenshot operations. It exists because
-an element the app will not act on is still a place on the screen: a song in
-Music is an `AXStaticText` inside an anonymous cell inside an anonymous row,
-and not one of the three implements `AXPress`. Offering only what publishes an
-accessibility action read that window — 14,274 nodes, 3,791 of them named text
-— as 72 elements, none of which was a song. See "What a window is allowed to
-say".
-
-### What is not offered
-
-`AXShowMenu` opens an element's context menu — the one a right-click opens —
-and it works. It remains unoffered because opening it takes focus.
-macOS activates an app to show a menu, so the operation that needs no pointer
-takes the screen instead; Finder went from `active: False` to `active: True`
-across a single call. Open menus are now observable, but this focus-taking
-context-menu operation remains outside the background-first action space.
-An ordinary popup `PRESS` can be followed by an observed menu-item `PRESS`
-or `SELECT`.
-
-`AXScrollToVisible` is published by almost every node in a web view and is
-useless here for the opposite reason: offscreen elements never reach the table
-in the first place, so everything that could be scrolled to is already in view.
-
-`INCREMENT` and `DECREMENT` are the expensive lesson. The bridge has derived
-and executed both from the start; adding them to the offered set is one line,
-they work, and they take no screen. Calculator publishes them on "Show Sidebar"
-and "Mode". Offering them put two more heads in every answer and two more ways
-to be wrong in a task that needs neither, and on "compute 12 times 34" against
-`deepseek-flash` the score went from **6 of 6 runs correct in 6 operations** to
-**1 of 8**, the rest wandering into the 40-operation budget. The element table
-was byte-for-byte identical in both; the only difference was the size of the
-choice. An operation that is free to implement is not free to offer.
-
-Every target head is answered on the same observed state, and only the head
-matching the chosen operation can execute. Two decisions, one round trip —
-[jev-ultrafast's speculative fan-out](https://docs.typesafe.ai/patterns/fan-out),
-with the field's value speculated in the same request.
-
-## The guard rides along
-
-The riskiest thing about desktop automation is that a wrong press is not a
-wrong page — it is a sent message, a deleted file, a granted permission.
-
-So the same request that picks the operation also rates it. `risk >= 0.5` holds
-the operation and hands it back instead of running it:
-
-```python
-with Agent("Mail", "Reply to the top thread with a note that I am travelling") as agent:
-    for state in agent.run():
-        ...
-    if agent.state["status"] == "needs_approval":
-        decision = agent.state["decision"]
-        print(decision["operation"], decision["risk"], decision["risk_reason"])
-        # → PRESS 0.9 "sends a message on the user's behalf"
-        agent.approve_pending()   # only if you mean it
-```
-
-Pass `approve=lambda decision: ...` to answer programmatically, or raise
-`risk_threshold`. Nothing consequential runs while the default is in place.
-
-This costs no extra round trip. A separate safety reviewer is a second model
-call on the critical path; a rating in the same structured answer is free.
-
-## Delivery is not task completion
-
-Each bridge action result and agent history entry carries `disposition`:
-
-| `delivery` | Evidence | `retry` |
-| --- | --- | --- |
-| `not_delivered` | Refused before input was sent | `safe` |
-| `delivery_uncertain` | Input may have reached the app; no reliable reply | `unsafe` |
-| `delivered_unverified` | Input was sent; the resulting state is unconfirmed | `unsafe` |
-| `delivered_verified` | A value read-back matched, or a pressed checkbox changed state | `unsafe` |
-
-Bridge exceptions expose the same dictionary as `error.disposition`. Existing
-exception types remain supported. `safe` describes non-delivery, not permission
-to replay a decision: the agent consumes each decision once. An uncertain action
-stays in history and stops the run for inspection. A successful `AXPress` alone
-is `delivered_unverified`; even a verified action does not establish that the
-whole goal succeeded. That still needs an outcome check.
-
-A broken pipe, incomplete reply, malformed reply or reply-ID mismatch discards
-the helper. The next request starts a fresh one; the failed request is never
-replayed. AX reads have a 250 ms per-message timeout and writes have 1 second.
-The Python request deadline also bounds a traversal that makes many AX calls.
-A timed-out AX read fails the observation instead of publishing an empty tree.
-
-Secure text fields publish `secure: true` and an empty value. The bridge never
-reads their value or descendants; generated input is omitted from the inspector,
-decision history and action history. Writing remains available, but its result
-is deliberately unverified. This does not redact secrets a caller explicitly
-places in the goal, or cover the separate Codex tree-text executor.
-
-## Try it
-
-```bash
-git clone https://github.com/max1874/open-computer-use.git
-cd open-computer-use
+```sh
 uv sync
-cp .env.example .env     # add JEV_API_KEY, or DECISION_API_KEY, or both
-uv run open-computer-use
+scripts/build.sh
+uv run --env-file .env open-computer-use --no-open
 ```
 
-The inspector opens on **http://127.0.0.1:8767**: the numbered element table,
-the operation and its probability distribution, the risk rating, and every
-operation that actually ran. **Step** decides and executes one at a time.
+Open the inspector at `http://127.0.0.1:8767`. It shows the observed element table, pending decision, risk and executed history. The server binds to loopback and requires its startup token for changes.
 
-Grant **Accessibility** to the terminal running this (System Settings > Privacy
-& Security > Accessibility). Screen Recording is optional: it is used only
-when a window publishes almost nothing to the accessibility tree, to send the
-model a picture of that window. Without it the run stays tree-only, and
-`pixels=False` keeps it that way even when the permission is granted.
+For a command-line task:
 
-There are two decision backends, and which one answers depends on whether the
-window can be described in text.
-
-**jev**, a System One model, answers a set of named questions — one choice of
-operation, one choice of index per operation, one score for the guard — and
-returns a probability distribution with each. Nothing is asked to write JSON,
-because nothing is asked to write. It takes text only and produces no text, so
-`TYPE_TEXT` values come from the text model below.
-
-```bash
-JEV_BASE_URL=https://api.typesafe.ai/v1
-JEV_MODEL=jev-latest
+```sh
+uv run --env-file .env python examples/run.py \
+  --app TextEdit --goal 'Replace the document text with a haiku about rain.'
 ```
 
-**Any OpenAI-compatible chat endpoint**, used for every decision when
-`JEV_API_KEY` is unset, and for the screenshot fallback either way — a window
-with nothing in its tree has to be shown as a picture, which jev cannot take.
-A provider that constrains the answer server-side (`json_schema`) is used in
-strict mode; one that only guarantees valid JSON gets the same shape spelled
-out in the prompt.
+Configure an OpenAI-compatible decision backend in the ignored `.env`:
 
-```bash
-DECISION_BASE_URL=https://openrouter.ai/api/v1
-DECISION_MODEL=deepseek/deepseek-v4.1-flash   # 1M context, logprobs, takes images
+```dotenv
+DECISION_BASE_URL=https://api.deepseek.com/v1
+DECISION_MODEL=deepseek-flash
+DECISION_API_KEY=your-key
 ```
 
-Either way an answer outside the offered choices is refused and nothing runs,
-so the constraint is never the only thing standing between a model and your
-machine. jev returns its distribution directly; a chat provider that returns
-logprobs gets one reconstructed from them, and one that returns neither shows
-the model's own confidence instead.
+The optional Jev backend answers structured choice heads instead of writing JSON. Set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot generate field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper, falling back to the decision backend settings. The product reads only user-configured environment variables.
 
-## Use the library
+The chat backend supports JSON schema and JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behavior. No token logprobs are requested.
+
+## Python
 
 ```python
 from open_computer_use import Agent
 
-with Agent("TextEdit", "Replace the text with a haiku about the menu bar.") as agent:
+sentence = "A small task, completed in the background."
+
+def reached(page):
+    return any(e.get("value") == sentence for e in page["elements"])
+
+with Agent("TextEdit", f"Replace the document with exactly '{sentence}'.", verify=reached) as agent:
     for state in agent.run():
-        print(state["elapsed_ms"], state["status"])
+        print(state["status"])
+    print(agent.state["verified"])
 ```
 
-```bash
-uv run --env-file .env python examples/calculator.py   # six presses, verified
-uv run --env-file .env python examples/textedit.py     # generate and enter a value
-uv run --env-file .env python examples/run.py \
-  --app "System Settings" --goal 'Turn on Dock auto-hide.' --activate
-
-uv run python examples/electron.py --app Lark   # no model, no key: it only looks
-```
-
-```text
-  1141 ms  PRESS  1               model 1000 ms   risk 0.01
-  1743 ms  PRESS  2               model  457 ms   risk 0.01
-  2369 ms  PRESS  Multiply        model  497 ms   risk 0.01
-  2998 ms  PRESS  3               model  497 ms   risk 0.01
-  3663 ms  PRESS  4               model  529 ms   risk 0.01
-  4356 ms  PRESS  Equals          model  540 ms   risk 0.01
-
-done after 6 operations, 5162 ms
-  7 model calls, 4133 ms of it waiting on the model (80% of the wall clock)
-  display                         : '12×34\n408'
-  the app never came to the front : True
-```
-
-The first answer costs about twice what the rest do, because a connection is
-being made: on jev that held in all eight runs, between 1.9 and 2.6 times the
-median of the rest. The chat arm is noisier about it — 1.1 to 4.5 — but the
-typical run is worse, not better. It is the one number here that a warm process
-would not pay.
-
-`--activate` brings the app to the front. Without it nothing moves on your
-screen — the agent reads and presses a window you are not looking at. The one
-thing that needs the front is the menu bar: an inactive app reports every menu
-command as disabled, so menu commands are simply not offered until the app is
-active.
-
-## The other executor
-
-The accessibility bridge in this repository is one way to reach a Mac app.
-Codex Computer Use is another, and it is better at the part this one is worst
-at: it exposes the host's desktop interaction API. The standalone bridge now also
-supports drag, paste, editing commands and text selection, with its own delivery
-and observation guards.
-
-It cannot be called from outside its host. There is no package to install —
-the desktop API lives inside Codex's JavaScript runtime. Older hosts expose
-`sky`; current hosts expose `cua.getApp`, whose methods can be adapted to the
-same interface below. That is why
-[`runtime/loop.mjs`](runtime/loop.mjs) is JavaScript and nothing else is: it is
-a hundred lines that observe, hand the tree to a decision process, and perform
-what comes back.
-
-```js
-// In a host with the legacy `sky` interface:
-const { runTask } = await import("file:///path/to/open-computer-use/runtime/loop.mjs");
-await runTask({
-  sky,
-  app: "Calculator",
-  goal: "Compute 12 times 34",
-  dryRun: true,                       // preview one step; then set false
-  python: "/path/to/open-computer-use/.venv/bin/python",
-  env: { JEV_API_KEY: "..." },        // or DECISION_API_KEY
-});
-```
-
-For a `cua.getApp` host, construct `sky` from the app handle:
-
-```js
-const target = await cua.getApp("Calculator");
-const sky = {
-  get_app_state: async () => ({ text: await target.getAXState({ emit: false, disableDiffing: true }) }),
-  click: ({ element_index }) => target.click(element_index),
-  set_value: ({ element_index, value }) => target.setValue(element_index, value),
-  press_key: ({ key }) => target.pressKey(key),
-  scroll: ({ element_index, direction, pages }) => target.scroll(element_index, direction, pages),
-};
-```
-
-Keep the awaited loop inside one active host invocation: native calls made by a
-promise continuing between tool invocations can be rejected by the host. A host
-without a global `process` accepts an explicit `env`; provide normal process
-variables such as `HOME` and `PATH` when its child needs them. Child processes
-still need permission to reach the configured model endpoint. A restricted host
-can use a `python` wrapper that forwards the same JSON-line decision protocol to
-an external process with network access.
-
-The decision layer is unchanged. `cua.py` parses the tree text Computer Use
-prints into the same indexed table `action_space` has always been handed, and
-everything downstream — the operation and target heads, the risk rating, the
-refusal memory, `scaffolding` — runs as it does over the bridge's snapshot.
-
-Two things are genuinely different, and both are the executor's, not ours:
-
-- **The index is the address.** Computer Use numbers every node per
-  observation and the numbers expire with it, so the tree is re-read after
-  every action and an index is never reused. The bridge addresses by path and
-  carries the label the decision was made about, because there a path is a
-  guess about a tree that may have moved.
-- **There is no geometry.** The text says what an element is and where it sits
-  in the tree, never where it is on screen. Everything here that measures
-  rectangles is therefore off on this path: the icon/caption merge, the
-  sparseness test, and the screenshot fallback they feed.
-
-What is verified: parser and decision contracts, plus a real `cua.getApp`
-adapter run that wrote a secure native field. The application's own receipt
-matched the intended input, while the public observation and returned history
-kept the value redacted. An earlier executor error stopped as an unsafe unknown
-outcome without resending. This host restricted child networking, so the live
-run forwarded its actual observation to an external decision process using the
-same Python decision module; it does not establish unrestricted networking from
-inside the host. The standalone Swift bridge has separate native runtime and
-model-driven acceptance for editing, selection and both drag paths.
-
-## Why it moves
-
-- **One request per decision cycle.** The operation head and every target head
-  share one observed state.
-- **The tree, not the pixels.** An accessibility snapshot of a TextEdit window
-  is 19 ms and a few hundred tokens. A screenshot is an image, a resize
-  sensitivity, and a coordinate the model has to be right about.
-- **One long-lived bridge.** The Swift helper stays up for the session, so a
-  step costs one traversal, not a process launch.
-- **Act from an observation, guarded.** A target must be unique when observed
-  and unique in a fresh census of the same native window. Reordering can change
-  its path without changing its identity. Ambiguity, incomplete identity reads
-  and process replacement refuse delivery. Process identity includes PID and
-  start time. A machine-wide lease prevents simultaneous bridge dispatch.
-- **Erase, set the value, read it back.** `TYPE_TEXT` means "replace the whole
-  value", and writing the value is not a replace everywhere: a rich text
-  composer treats it as an insert and keeps what was there. So the old contents
-  are erased through the keyboard first — aimed only at an element the app is
-  confirmed to be focused on — and only then is the value written and read
-  back. Erasing first is also what makes the read-back mean anything: a field
-  that already held the text would pass the check whether or not the write
-  landed. None of it takes the screen. Keyboard typing is the fallback when the
-  value is refused, and the result says which mechanism ran.
-- **Menu commands without opening menus.** The whole menu bar is a flat,
-  addressable action space — something a browser agent has no equivalent of.
-- **Semantic freshness.** A fingerprint over roles, labels, values and states,
-  not a mutation count. A window that merely moved has not changed.
-- **Visible text only.** Offscreen and zero-size elements never reach the
-  model's context.
-
-On this path, model output never becomes a path, a selector, a shell command or
-executable code. It selects an index from a table the executor built.
-
-## What a window is allowed to say
-
-The second time this project mistook its own reader for the app.
-
-The first is the section below: Electron windows looked empty because the walk
-stopped above the web content. This one is Music. Its window publishes 14,274
-accessibility nodes — 955 rows, 6,595 cells, 3,791 named static texts carrying
-every song title, artist, album and duration, and every entry in the sidebar.
-This reader offered **72 elements**, and not one of them was a song.
-
-The filter was one line: an element with no accessibility action is context,
-not a choice. It sounds conservative. What it means in a list-shaped app is
-that the contents of the window are unreachable, because a song in Music is an
-`AXStaticText` inside an anonymous `AXCell` inside an anonymous `AXRow` and
-none of the three implements `AXPress`. What survived the filter was 67 hover
-buttons — ten identical triples of 喜爱 / 播放 / 更多, carrying no identity at
-all — so a run that needed a particular song had a table with plenty in it and
-nothing to aim at. The sparseness test called that window rich, which it was,
-and not addressable, which it could not see.
-
-So elements that carry content are now offered too, with `CLICK`, which selects
-their containing row when native selection is available, or aims at the middle
-of the element's own rectangle with pointer permission. Three things keep it honest:
-
-- **It is last.** Any element that answers to the accessibility API is reached
-  that way; `CLICK` appears only where nothing else can.
-- **Background delivery is per element.** The bridge reports which observed
-  targets have a settable row selection. Only those are offered without
-  `activate`; a missing or refused native selection never falls back to the
-  pointer. Pointer delivery still requires the app in front and the target
-  uncovered, just like the screenshot operations.
-- **Content and controls have separate budgets.** A shared limit is spent by
-  four thousand song titles before the walk reaches the toolbar, and the table
-  then looks full while the app's actual controls have fallen off the end.
-
-A static text's name is its value, which is its own small correction: every
-other role answers to a title, a description or a label element, and reading
-this one the same way returned an entire window's contents as anonymous.
-
-## When the window says nothing
-
-Far fewer windows than this project first claimed. An earlier version of this
-section said Electron apps — Feishu, Lark, Slack, VS Code — keep their interface
-out of the accessibility tree entirely, and cited Feishu publishing two
-characters of text and nowhere to type. That measurement was real and the
-conclusion drawn from it was wrong: the tree was there and the walk stopped
-above it. Chromium puts the web area nine levels below the window and the
-interface another ten to twenty below that, and the traversal limit had been set
-for native windows, which put everything within a dozen. Feishu at depth 18
-reports 2 characters; at depth 40 it reports 2431 characters and a composer to
-type into. Lark reports 3399 characters and 174 actionable elements.
-
-The cost of looking that far is about 100 ms per snapshot on the apps that need
-it (Lark 34 ms to 169 ms, Feishu 43 ms to 132 ms) and nothing measurable on the
-apps that do not — Calculator and Finder return identical trees at depth 18 and
-depth 60. Next to a decision the model takes most of a second to make, that is
-a cheap way to read a window instead of photographing it.
-
-What survives is a much smaller class. Linear publishes three elements, no text
-and nothing to press, at any depth. For a window like that the tree really has
-nothing to offer.
-
-`examples/electron.py` reads one window at four depths and prints what each one
-saw, so none of this has to be taken on trust. It presses nothing, types
-nothing, activates nothing and calls no model:
-
-```text
- depth  elements  named  coverage    text  typeable  sparse?     ms
-    18        37     32       1.0       5         0    False     48
-    26       101     54       1.0    2127         1    False    124
-    40       205    126       1.0    6030         1    False    332
-    60       205    126       1.0    6030         1    False    345
-```
-
-Run it against a native window to see the control: Finder reports the same 40
-elements and 1000 characters at every depth, because it never had anything
-below twelve levels to find.
-
-The `sparse?` column is worth reading closely, because on this window it is
-wrong in the comfortable direction. The shallow read never measured as sparse —
-coverage stays at 1.0, carried by a single element spanning the window — so the
-screenshot fallback would not have fired either. It was an empty table that
-nothing flagged, which is exactly how a measurement ends up supporting the
-wrong conclusion.
-
-So there is a second path, entered only when a window is sparse by measurement
-(little of the window described, almost no text, nothing editable — see
-`desktop.sparseness`): capture the window and offer `CLICK_POINT` and
-`TYPE_KEYS` alongside the indexed elements.
-
-**It is worse in every way, and it is meant to be a last resort.**
-
-- The model **invents a coordinate** instead of selecting an index, so nothing
-  can check the target before the click lands. This is the opposite of the idea
-  the rest of the project is built on.
-- **Clicking** it takes the screen, as implemented here. Seeing it does not.
-  `pixels=True` photographs the window and shows it to the model with the app
-  wherever it was; `activate=True` is what adds the operations aimed at that
-  picture, because the click is delivered through the window server, which has
-  one cursor. The two were one flag, and the cost of that was a window whose
-  tree says nothing could not be looked at without being raised.
-
-  Process-targeted mouse events were tested on System Settings behind other
-  windows: a `leftMouseDown`/`leftMouseUp` pair posted to its pid at Wi-Fi and
-  Appearance did not navigate either pane. Native row selection did, without
-  focus events. That gives indexed `CLICK` a background delivery on those
-  elements, but does not give a screenshot point one; `CLICK_POINT` still
-  requires `activate=True`.
-- It **sends your screen to the model.** The whole window, whatever is in it.
-- It **cannot be verified by the tree.** These windows' fingerprints barely
-  move whatever happens inside them, so captures carry a 16×16 greyscale
-  reduction and a pixel operation is judged by comparing two of them. The
-  comparison is per region, not per window: averaging the whole thing divides
-  a real change by the unchanged majority around it, which scored a pressed
-  digit at 0.30 and a third of a window changing at 1.88, both under a
-  threshold of 2 and both therefore recorded as nothing happening. Scoring
-  sixteenths of the window and taking the loudest separates cleanly — 0.00 to
-  0.19 when nothing happened, 2.25 and up when something did. On the path
-  itself, in Linear: four real clicks on empty space score 0.00, and clicking
-  a tab scores 2.50 against the whole-window average's 0.41.
-
-Three guards stand in front of it. The app must be frontmost. The point must
-not be occluded — the window list is ordered front to back, so the code can ask
-what a click at that point would actually hit. That guard exists because during
-development a click aimed at Calculator landed in a browser window covering it.
-And the window must still be the one in the picture, at the size it was: a
-point means nothing except in the picture it was named in, so the capture's
-window id and size ride along with it and a window resized in between is
-refused. The bridge always had that check. Nothing sent it the window's
-identity until it was tested, so for its whole life it could not fire — a
-stale click went through and landed where the arithmetic happened to put it.
-
-## Evidence and limits
-
-Measured on this machine (M-series, macOS 26), median of 7, end to end from
-Python — the JSON-RPC round trip to the Swift helper included, because that is
-what a caller pays. An earlier version of this table reported much smaller
-numbers for the same work, from inside Swift; those are not what anyone
-experiences and are not comparable to these.
-
-| | |
-|---|---|
-| snapshot, TextEdit window (4 elements, 2 levels) | **19.2 ms** |
-| snapshot, Calculator window (24 elements, 5 levels) | **67.6 ms** |
-| snapshot, Finder window (47 elements, 7 levels) | **116.7 ms** |
-| snapshot, Lark window (201 elements, 39 levels) | **281.4 ms** |
-| freshness check, TextEdit / Calculator / Finder / Lark | **16.6 / 77.4 / 124.9 / 253.4 ms** |
-| `TYPE_TEXT` into a native document (TextEdit) | **152 ms** |
-| `TYPE_TEXT` into a web composer (Lark) | **207 ms** |
-| one whole step, act + settle + observe (Calculator) | **134 ms** |
-| bridge start, once per session | **149 ms** |
-
-The freshness check is not the cheap one it was described as. It asks the same
-question as a snapshot and returns less of the answer: same traversal, same
-accessibility reads, and those are where the time goes. It comes in within
-noise of a full snapshot on every window measured. A genuinely cheap staleness
-check would have to be a different question.
-
-Both backends on the same task, `examples/calculator.py` — press `1`, `2`, `×`,
-`3`, `4`, `=` and then notice you are done — eight runs each, same machine,
-same hour, changing nothing but `JEV_API_KEY`:
-
-| | jev | deepseek-v4.1-flash |
-|---|---|---|
-| correct result, verified by reading the display | **8 / 8 runs** | **8 / 8 runs** |
-| operations per run | 6, every run | 6, every run |
-| decision latency, median | **490 ms** | **2268 ms** |
-| decision latency, range | 460-552 ms | 1656-3598 ms |
-| task wall clock, median | **5.1 s** | **23.7 s** |
-| share of wall clock waiting on the model | 78% | 80% |
-| runs that brought the app to the front | 0 | 0 |
-
-The accuracy columns are identical, so nothing here says one backend chooses
-better than the other on a task this size. What separates them is how long the
-answer takes, and one caveat has to be read alongside that number: the chat arm
-goes through OpenRouter, and an earlier measurement of the same model class
-against its vendor's own API was 744 ms. Most of the 4.6x is the gateway rather
-than the model, and against that 744 ms the honest figure is about 1.5x.
-
-Eight runs is a small sample and it is worth saying what a small sample hides.
-An earlier version of this table said 6 of 6 and one before it 4 of 4, and a
-build differing only by offering two more operations scored 1 of 8 - see "What
-is not offered". Those earlier numbers were also taken with a weaker check than
-this one: Calculator keeps a visible tape of previous calculations, and looking
-for the expected value anywhere in the window passed on a result left behind by
-the run before it. The check now reads the last line only, and the tape is
-hidden before the run starts.
-
-**Four fifths of every run is spent waiting for the answer, on both backends.
-The macOS side of a whole step is 134 ms. The fastest answer measured here is
-490.**
-
-That is the argument for a System One model, and the reason jev-ultrafast runs
-on one. Nothing in this loop is waiting on macOS; it is waiting for a decision
-that was always a choice from a list. Asking for it as a choice rather than as
-a JSON object someone has to write out is worth the better part of a second
-every step, and it is the same six presses either way.
-
-`scripts/check_bridge.py` reproduces the accessibility half with no model calls
-at all.
-
-## Not taking the model's word for it
-
-`DONE` is the model's opinion about its own work. Give the agent a way to
-check and the check decides instead:
-
-```python
-with Agent("Calculator", "Compute 12 times 34",
-           verify=lambda page: "408" in page["text"]) as agent:
-    ...
-agent.state["verified"]    # True, False, or None if nothing could judge it
-agent.state["status"]      # "blocked" when the model said DONE and the check said no
-```
-
-Three separate facts are now recorded per step, because they are three
-different things and conflating them is how an agent comes to believe its own
-press release:
-
-- **dispatched** — the operation was sent. A reply that never comes back raises
-  `UnknownOutcome`: it may have run, so the run stops rather than retrying.
-- **window_changed** — something visibly moved. Not success.
-- **verified** — the caller's check agrees the goal is met.
-
-The same applies to staying out of your way. Every operation records the
-frontmost process before and after, so `took_focus` is a measurement rather
-than an architectural promise — `examples/calculator.py` prints `False` for it
-on every run.
-
-Known limits:
-
-- **Background `CLICK` selects a row, not an arbitrary point.** Both setting
-  `AXSelected` on a row and `AXSelectedRows` on its outline navigated System
-  Settings to Wi-Fi and Appearance. Its ordinary pane headings have neither
-  capability and remain unavailable without `activate`. Finder's measured
-  file-list names offer `TYPE_TEXT`, not `CLICK`; selecting their row does not
-  open the folder. Their text fields advertise `AXOpen`, but the measured call
-  returned error `-25205` and the observed window stayed on the containing
-  folder. No general background mouse delivery is implemented.
-
-- **Extended thinking has to be off.** A model that reasons before answering
-  spends its output budget doing it: a `deepseek-flash` answer measured here
-  was 417 reasoning tokens to 13 tokens of JSON, and on a real action space it
-  is the JSON that gets truncated. Disabled automatically for DeepSeek; check
-  your provider's default before blaming the loop.
-
-- **Menu titles do not revalidate.** After a command flips a menu item's title
-  ("Make Rich Text" → "Make Plain Text"), the accessibility tree kept reporting
-  the old title for at least two seconds in testing. Menu commands whose titles
-  are state-dependent are unreliable; stable ones are fine.
-- **Labels move under you.** Calculator's clear button is "All Clear" when the
-  display is clear and "Clear" when it is not. That is exactly what the
-  execution guard is for, and exactly why a plan made two observations ago
-  cannot be trusted.
-- **macOS terminates idle background apps.** An app the agent is driving but
-  nobody is looking at can be reclaimed between runs. If the window disappears
-  mid-run the operation that already executed stays on the record and the run
-  stops as blocked, rather than vanishing with an exception.
-- Web content is reachable but this is not a browser tool. Chrome reports 76
-  elements and 3525 characters of text here, and forms in it read back fine, so
-  the old claim that browser content is mostly absent from the tree was wrong
-  in the same way the Electron one was. What is missing is everything a browser
-  needs beyond one window: tabs, navigation, multiple pages. For web work use
-  [browser-harness](https://github.com/browser-use/browser-harness) or
-  [jev-ultrafast](https://github.com/browser-use/jev-ultrafast).
-- **The pixel fallback works, and how well depends on the picture, not the
-  model.** A whole run goes through it on Linear, which publishes three
-  elements and no text at all: capture, coordinate, HID click, and the change
-  read back off the picture. Asked to switch a tab, `deepseek-v4.1-flash`
-  named a point 3 pixels from the centre of a tab whose position had been
-  confirmed by clicking it, six times out of six, and the executed run landed
-  on it. The same question against the old 1000-pixel capture missed by 40 to
-  67 pixels every time — on that window, a different control. The interface
-  and the model were identical; only the width changed. See `Desktop.capture`.
-  Since the depth fix the fallback fires far less often than it was built to,
-  which means it still gets far less exercise than the tree path.
-- **One app per run.** Its accessible windows, sheets and open menus share one
-  observation. Multi-app orchestration remains outside this loop. Windows that
-  publish little are measured individually for pixel fallback; an incomplete
-  identity census never triggers pixels to bypass a failed tree read.
-- **Poor trees remain a constraint.** Publication budgets report omitted
-  descendants separately from an incomplete traversal. Per-node truncation and
-  target-identity flags show what the reader could establish. Permission probes
-  use a fresh process, including after a mid-session grant.
-- **Open menus are now readable.** A native AppKit popup exposed Red, Green and
-  Blue after `PRESS`; `SELECT` read back Green. The earlier sample of 40 closed
-  web-view and toolbar buttons with no menu children remains an observation
-  about those controls, not a claim that no popup can be selected.
-- **Model accuracy still needs measurement.** In a small `deepseek-flash`
-  comparison, the baseline calculator completed 4/4 cases. Extra single-window
-  metadata initially reduced that to 2/4; removing it restored identical full
-  request bodies for the same observation and goal. The next four cases were
-  3/4 correct, with one looping, so this sample does not establish an accuracy
-  improvement. Execution correctness and model task success are separate.
-- The risk rating is a model's judgement, not a policy engine. It is a gate on
-  obvious harm, not a guarantee.
-- **An editable field is not always a place to write prose.** A Finder window
-  and an open dialog publish every filename as an ordinary `AXTextField` with a
-  settable value, indistinguishable from a search box, so `TYPE_TEXT` aimed at
-  one is a rename. Both were renamed by accident while this was being built;
-  neither reached disk, because the name is only committed on Return. The guard
-  that exists for this is the risk rating and `approve`, which means the guard
-  is a model's opinion — worth knowing before running unattended somewhere with
-  a file browser open.
-
-## FAQ
-
-**How is this different from screenshot-based computer use?**
-Anthropic's and OpenAI's computer-use tools show the model a screenshot and
-take back a pixel coordinate. Here the model is shown the accessibility tree as
-a numbered table and picks an index, so every target is an element that was
-observed, and it is checked again before anything runs. A picture is taken only
-for a window that measures as sparse — see "When the window says nothing".
-
-**Which models can it use?**
-Any OpenAI-compatible chat endpoint, and Jev as an optional decision backend.
-Jev takes text only, so the screenshot fallback and `TYPE_TEXT` values still go
-to the chat model. Extended thinking has to be off; see "Known limits".
-
-**What leaves the Mac?**
-Each decision sends the goal, the app name, the window title, the window's
-visible text, the element table — field contents included — the menu command
-names and the last ten actions to the endpoint you configured. A sparse window
-also sends a picture of the whole window, if Screen Recording is granted;
-`pixels=False` keeps a run tree-only. Nothing else in the package calls out.
-
-**Which apps can it drive?**
-One app's accessible windows: native apps, and Electron and Chromium windows
-once the walk goes deep enough (Lark: 174 actionable elements). Indexed text
-editing and dragging are available when the observed element supports them.
-Sparse canvases use screenshot-bound pointer operations with explicit activation
-permission. Arbitrary background mouse delivery remains unsupported.
-
-More, in English and Chinese: [max1874.com/open-computer-use](https://max1874.com/open-computer-use/)
-
-## Small enough to read
-
-| File | Job |
+`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim.
+
+Consequential operations are held at `risk >= 0.5`. Inspect the decision before calling `agent.approve_pending()`, or supply an `approve(decision)` callback. The rating shares the decision request; it is the same model's judgment, not an independent safety reviewer.
+
+## Background operations
+
+`PRESS`, `TYPE_TEXT`, `PASTE_TEXT`, `SELECT_TEXT`, `KEY_CHORD`, `SELECT`, `CLICK`, `MENU`, `SCROLL_UP`, `SCROLL_DOWN`, `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
+
+- `PRESS` uses `AXPress`; menu-opening popup and menu-button presses are withheld because they can activate an inactive app.
+- `TYPE_TEXT` replaces a field. `PASTE_TEXT` inserts at its selection; `SELECT_TEXT` uses UTF-16 offsets. Editing keys are whitelisted and sent to the target process. Field focus is internal to that app; the bridge never activates it.
+- `CLICK` means native row selection where the observed app supports it. It never falls back to a mouse click. This has navigated System Settings sidebar rows without moving the pointer or taking focus; it does not open an arbitrary Finder file.
+- Already-open menus can be observed. Closed menu-bar commands are offered only when the app is already active; the bridge never raises it to validate a menu. App-dependent menu titles can be stale.
+- Unicode insertion prefers `AXSelectedText`, with a temporary clipboard fallback when needed. The clipboard is restored only if another app has not changed it during the operation.
+
+There is one native executor. Activation flags, Codex-host execution, mouse input, dragging, screenshots and visual fallback have been removed. A canvas without usable accessibility controls is outside scope; it cannot be made a successful background task by taking the screen.
+
+Native APIs can still cause app-specific side effects. `took_focus` records observed endpoint changes only. Full-run acceptance independently listens for macOS application-activation events, including a transient activation followed by a return to the original app. A run that changes the requested value but steals focus fails acceptance. Bringing the previous app back does not undo that failure.
+
+## Delivery and identity
+
+Every result and bridge exception carries `disposition`:
+
+| Delivery | Evidence | Retry |
+| --- | --- | --- |
+| `not_delivered` | Refused before input | `safe` |
+| `delivery_uncertain` | Input may have arrived; reliable reply missing | `unsafe` |
+| `delivered_unverified` | Input sent; outcome unconfirmed | `unsafe` |
+| `delivered_verified` | Post-action value or checkbox-state read-back matched | `unsafe` |
+
+The agent consumes each decision once and records execution before reading its result. It never replays a mutation. Unknown delivery stops the run with its history intact. Verified delivery is separate from completing the whole task.
+
+Targets are references from one observation, bound to the process PID and start time. Their role, name and optional native identifier must be unique across the captured surface, including unpublished nodes. An incomplete or ambiguous identity is not executable. A fresh census re-identifies the target before input; a changed child path alone cannot select the wrong control.
+
+AX metadata is batched per traversal. Read and write deadlines are separate. A broken transport discards the helper; the next request starts a new one without replaying the old input. Permission probes run in a fresh process.
+
+Secure fields are classified before value reads; their values and descendants are omitted, and generated input is removed from public decisions and history. This does not scrub a secret the caller explicitly places in the goal.
+
+## Limits and verification
+
+One app per run, including its accessible windows and open menus. Publication budgets and identity census limits are separate; incomplete observations are explicit. A run stops at 40 operations, 80 decisions or three consecutive unchanged operations. State-changing cycles can still consume the budget. Model task success varies independently of reliable execution.
+
+`examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
+
+`scripts/mock_model.py` is a loopback stand-in for exercising transport and execution without paid model calls. It proves no model intelligence. Unit and source-contract tests run in the existing CI, together with the Swift build; they do not replace real background task acceptance.
+
+## Read the implementation
+
+| File | Responsibility |
 | --- | --- |
-| [`axbridge.swift`](open_computer_use/axbridge.swift) | The accessibility snapshot, the indexed table, and guarded execution |
-| [`agent.py`](open_computer_use/agent.py) | The loop, the guard gate, and the staleness handling |
-| [`actions.py`](open_computer_use/actions.py) | The observed action table and the answer schema shared by both backends |
-| [`model.py`](open_computer_use/model.py) | Provider requests and interpretation of the chosen answer |
-| [`desktop.py`](open_computer_use/desktop.py) | The long-lived bridge and the settle policy |
-| [`questions.py`](open_computer_use/questions.py) | The instructions and the budgets |
-| [`demo.py`](open_computer_use/demo.py) | The local inspector |
-| [`cua.py`](open_computer_use/cua.py) | Codex Computer Use's tree text, read as the same element table |
-| [`decide.py`](open_computer_use/decide.py) | One decision per line, for an executor in another process |
-| [`runtime/loop.mjs`](runtime/loop.mjs) | The executor half, inside Codex's JavaScript runtime |
+| `axbridge.swift` | Native observation, identity and guarded background execution |
+| `desktop.py` | Long-lived bridge, delivery failures and settle policy |
+| `actions.py` | Observed action table and answer schema |
+| `model.py` | Decision backends and field-value helper |
+| `agent.py` | Prediction, risk approval, once-only execution and history |
+| `demo.py` | Local inspector |
 
-`scripts/build.sh` compiles the bridge with `swiftc` and no dependencies.
-
-## Credit
-
-The design is [jev-ultrafast](https://github.com/browser-use/jev-ultrafast)'s:
-the indexed action space, the speculative target heads, the scoped freshness
-guards, and the rule that the model chooses rather than generates. That project
-is by [Browser Use](https://github.com/browser-use) and runs on
-[TypeSafe's Jev](https://docs.typesafe.ai/introduction).
-
-This port began on an OpenAI-compatible model, with the decision written as a
-single structured answer over enumerated choices — which is the shape a System
-One model takes, so Jev now sits behind `model.choose` and answers it directly.
-It still runs without a Jev key: leave `JEV_API_KEY` unset and every decision
-goes to the chat backend, which is also where the screenshot fallback goes
-either way, since Jev takes text only.
-
-The accessibility helpers follow `cu`, a macOS accessibility CLI, MIT.
-
-## License
-
-[MIT](LICENSE) © 2026 MAX LIN. Portions derived from jev-ultrafast are © 2026 Browser Use, also MIT.
+Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). See [design](docs/design.md) and [remaining boundaries](todo.md).

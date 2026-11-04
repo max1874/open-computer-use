@@ -48,7 +48,6 @@ def serialise(agent):
             "confidence": decision["confidence"],
             "risk": decision["risk"],
             "risk_reason": decision["risk_reason"],
-            "probabilities": decision["probabilities"],
             "latency_ms": decision["latency_ms"],
             "model": decision["model"],
             "offered": decision["offered"]["operations"],
@@ -132,7 +131,6 @@ class Handler(BaseHTTPRequestHandler):
                     AGENT["agent"] = Agent(
                         body["app"],
                         body["goal"],
-                        activate=bool(body.get("activate")),
                         risk_threshold=float(body.get("risk_threshold", 0.5)),
                     )
                 elif path == "/api/stop":

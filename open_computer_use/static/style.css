@@ -43,7 +43,6 @@ h1 { font-size: 15px; margin: 0; letter-spacing: -0.01em; }
 .controls { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
 label.grow { flex: 1; min-width: 260px; }
-label.check { flex-direction: row; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 12px; padding-bottom: 8px; }
 
 input[type="text"], input:not([type]) {
   background: #0a0d10;
@@ -113,13 +112,6 @@ h2:not(:first-child) { margin-top: 18px; }
 .decision { display: flex; flex-direction: column; gap: 12px; }
 .chosen-op { font: 600 20px var(--mono); color: var(--accent); }
 .chosen-op small { display: block; font: 12px var(--sans); color: var(--dim); margin-top: 2px; }
-
-.bars { display: flex; flex-direction: column; gap: 4px; }
-.bar { display: grid; grid-template-columns: 120px 1fr 44px; gap: 8px; align-items: center; font: 11px var(--mono); }
-.bar .track { height: 6px; background: #0a0d10; border-radius: 3px; overflow: hidden; }
-.bar .fill { height: 100%; background: var(--accent-dim); }
-.bar.top .fill { background: var(--accent); }
-.bar .pct { text-align: right; color: var(--dim); }
 
 .meta { display: flex; gap: 14px; flex-wrap: wrap; font: 11px var(--mono); color: var(--dim); }
 .risk { border-left: 2px solid var(--warn); padding: 7px 10px; background: #1d1810; border-radius: 0 6px 6px 0; font-size: 12px; }

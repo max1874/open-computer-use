@@ -412,32 +412,19 @@
       "page": "before",
       "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
       "history": [],
-      "pointer": false,
-      "refused": [],
-      "request_sha256": "55d219693f18a732b8f63b71904a369abb6ee0289647d3d1733d61aa49986446"
-    },
-    {
-      "name": "pointer",
-      "page": "before",
-      "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
-      "history": [],
-      "pointer": true,
-      "refused": [],
-      "request_sha256": "65282317ec92b1b3f179e080ebf96f7f32b6b9682493aec2c56ae61c47c9ab7e"
+      "refused": []
     },
     {
       "name": "refused-field",
       "page": "before",
       "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
       "history": [],
-      "pointer": false,
       "refused": [
         [
           "TYPE_TEXT",
           "0.0"
         ]
-      ],
-      "request_sha256": "14e20abca0808326793e8b782c7db0aa458354e7a946ad0a9d660a2b3be5de79"
+      ]
     },
     {
       "name": "after-delivery",
@@ -473,9 +460,8 @@
           "elapsed_ms": 308
         }
       ],
-      "pointer": false,
-      "refused": [],
-      "request_sha256": "f96aecdec913dd3c472b64796e137be917ab870d36d5663d0d663dc12688b859"
+      "refused": []
     }
-  ]
+  ],
+  "source": "Native AppKit observations captured before background-only scope; removed operations must be filtered."
 }

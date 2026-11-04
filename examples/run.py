@@ -4,8 +4,6 @@
     uv run --env-file .env python examples/run.py \
       --app TextEdit --goal 'Replace the text with a haiku about the menu bar.'
 
-Add --activate when the goal needs menu-bar commands: an inactive app reports
-every menu item as disabled. Without it nothing takes the screen from you.
 """
 
 import argparse
@@ -17,7 +15,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, help="app name, bundle id, or pid")
     parser.add_argument("--goal", required=True)
-    parser.add_argument("--activate", action="store_true", help="bring the app to the front")
     parser.add_argument("--yes", action="store_true", help="approve consequential operations automatically")
     parser.add_argument("--risk-threshold", type=float, default=0.5)
     options = parser.parse_args()
@@ -32,7 +29,6 @@ def main():
         options.app,
         options.goal,
         approve=approve,
-        activate=options.activate,
         risk_threshold=options.risk_threshold,
     ) as agent:
         shown = 0

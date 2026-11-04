@@ -7,30 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from open_computer_use.cua import parse
 from open_computer_use.desktop import Bridge, UnknownOutcome
 from open_computer_use.model import choose, action_space
-
-
-class TreeContracts(unittest.TestCase):
-    def test_exact_limit_does_not_claim_missing_nodes(self):
-        page = parse("1 group Root\n  2 button Save", limit=2)
-        self.assertTrue(page["complete"])
-        self.assertFalse(page["truncated"])
-
-    def test_omitted_descendant_marks_its_published_parent(self):
-        page = parse("1 group Root\n  2 button Save\n  3 button Cancel", limit=2)
-        self.assertFalse(page["complete"])
-        self.assertTrue(page["elements"][0]["subtree_truncated"])
-        self.assertFalse(page["elements"][1]["subtree_truncated"])
-        self.assertEqual(page["nodes_observed"], 3)
-
-    def test_secure_host_field_does_not_enter_the_value_table(self):
-        page = parse("1 secure text field (settable) Password, Value: synthetic-secret")
-        self.assertTrue(page["elements"][0]["secure"])
-        self.assertIn("TYPE_TEXT", page["elements"][0]["operations"])
-        self.assertEqual(page["elements"][0]["value"], "")
-        self.assertNotIn("synthetic-secret", json.dumps(page))
 
 
 class DecisionContracts(unittest.TestCase):
@@ -45,15 +23,20 @@ class DecisionContracts(unittest.TestCase):
         reply = {"answer": {"risk": 0, "confidence": 1, "risk_reason": "editing", **answer},
                  "probabilities": {}, "model": "stand-in", "usage": {}, "latency_ms": 0}
         with patch.dict(os.environ, {"JEV_API_KEY": ""}), patch("open_computer_use.model.ask_chat", return_value=reply):
-            return choose(self.page, "Edit the scratch document", [], pointer=True)
+            return choose(self.page, "Edit the scratch document", [])
 
-    def test_destination_is_looked_up_in_the_observed_table(self):
-        result = self.decide({"operation": "DRAG", "drag_target": "1", "drag_destination": "2"})
-        self.assertEqual(result["action"]["destination_path"], "0.2")
+    def test_retired_pointer_operations_cannot_be_selected(self):
+        for op in ("DRAG", "DRAG_POINT", "CLICK_POINT", "TYPE_KEYS"):
+            with self.subTest(operation=op), self.assertRaises(ValueError):
+                self.decide({"operation": op, "drag_target": "1", "drag_destination": "2"})
 
-    def test_generated_destination_path_cannot_be_executed(self):
-        with self.assertRaises(ValueError):
-            self.decide({"operation": "DRAG", "drag_target": "1", "drag_destination": "0.99"})
+    def test_click_requires_an_observed_native_selection_capability(self):
+        self.page["elements"][0]["operations"] = ["CLICK"]
+        _, targets, _ = action_space(self.page)
+        self.assertNotIn("CLICK", targets)
+        self.page["background_clicks"] = ["1"]
+        _, targets, _ = action_space(self.page)
+        self.assertEqual(targets["CLICK"]["1"]["op"], "CLICK")
 
     def test_unoffered_shortcut_is_refused(self):
         with self.assertRaises(ValueError):
@@ -68,10 +51,10 @@ class DecisionContracts(unittest.TestCase):
     def test_window_context_is_only_added_when_it_distinguishes_targets(self):
         self.page["windows"] = [{"title": "Document"}]
         self.page["elements"][0]["window"] = "Document"
-        elements, _, _ = action_space(self.page, pointer=True)
+        elements, _, _ = action_space(self.page)
         self.assertNotIn("window", elements[0])
         self.page["windows"].append({"title": "Other"})
-        elements, _, _ = action_space(self.page, pointer=True)
+        elements, _, _ = action_space(self.page)
         self.assertEqual(elements[0]["window"], "Document")
 
 

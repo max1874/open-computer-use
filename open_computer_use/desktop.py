@@ -10,7 +10,6 @@ import selectors
 import subprocess
 import threading
 import time
-from math import isqrt
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -197,156 +196,14 @@ SETTLE_MS = {
     "PASTE_TEXT": 40,
     "KEY_CHORD": 80,
     "SELECT_TEXT": 25,
-    "DRAG": 150,
-    "DRAG_POINT": 150,
     "WAIT": 150,
-    # A web interface answers a click by re-rendering, which is slower than a
-    # native control flipping state, and nothing here can read that it finished.
-    "CLICK_POINT": 400,
-    # Same delivery as CLICK_POINT — a real pointer, a real event — so the app
-    # answers on its own schedule rather than returning when the call does.
-    "CLICK": 400,
-    "TYPE_KEYS": 250,
 }
-
-
-# A region is a quarter of the window's width and height, so a sixteenth of its
-# area, and they overlap by half so that a change straddling a boundary still
-# falls whole inside some region.
-THUMBNAIL_BLOCK = 4
-THUMBNAIL_STRIDE = 2
-
-
-def thumbnail_difference(before, after):
-    """The biggest change in any one part of the window, 0 to 255.
-
-    Averaging the whole window was the obvious way to do this and it does not
-    work, because the thing being measured is local and the average is not. A
-    real change divided by an unchanged majority comes out near zero: pressing
-    a digit in Calculator, which is as unambiguous as an interface gets, scores
-    0.30 against a threshold of 2. A block of a real Lark window 341 points on
-    a side — a third of its width — scores 1.88 and is also read as nothing.
-    Three of those in a row and `Agent` calls the run stuck and stops it.
-
-    So the window is scored in overlapping regions and the loudest one wins. A
-    change confined to a sixteenth of the window now counts sixteen times for
-    what it is, and a change larger than that still reads as large, because the
-    regions overlap and one of them lies inside it.
-
-    Measured on the pairs this has to separate. Nothing happening: seven real
-    windows captured twice back to back score 0.00 to 0.19, and Calculator's
-    All Clear pressed against an already-clear display scores exactly 0.00.
-    Something happening: one digit 2.50, All Clear against a display holding
-    something 2.25 to 4.62 depending on what it held, an 85-point square at
-    reading contrast 7.50. Repeated presses give the same score to two decimals.
-
-    The hover highlight under the pointer was the one case arithmetic put near
-    the threshold, and it does not arise. `clickImagePoint` moves the pointer
-    back before it returns, and the second capture is taken after that and
-    after the settle, so the highlight is gone by the time anything is
-    compared. Measured rather than assumed: four real clicks on empty space in
-    a Linear window — pointer really moved there, button really pressed —
-    score 0.00, and clicking a tab in that same window scores 2.50. The
-    whole-window average scores that same tab click 0.41 and calls it nothing.
-    """
-    if not before or not after or len(before) != len(after):
-        return None
-    side = isqrt(len(before))
-    if side * side != len(before) or side < THUMBNAIL_BLOCK:
-        # Not a square reduction; fall back to the plain average rather than
-        # inventing a geometry the caller never promised.
-        return sum(abs(a - b) for a, b in zip(before, after)) / len(before)
-    delta = [abs(a - b) for a, b in zip(before, after)]
-    cells = THUMBNAIL_BLOCK * THUMBNAIL_BLOCK
-    corners = range(0, side - THUMBNAIL_BLOCK + 1, THUMBNAIL_STRIDE)
-    return max(
-        sum(
-            delta[row * side + column]
-            for row in range(top, top + THUMBNAIL_BLOCK)
-            for column in range(left, left + THUMBNAIL_BLOCK)
-        )
-        / cells
-        for top in corners
-        for left in corners
-    )
-
-
-# Below this the window looks unchanged. Nothing happening measures 0.00 to
-# 0.19 and the weakest real change measured 2.25, so the line goes in the
-# middle of that rather than against either edge — and nearer the quiet end,
-# because the two mistakes do not cost the same. A missed change is counted
-# towards the three that make `Agent` call the run stuck and stop it, so three
-# of them end the task. A change that was really nothing costs one more step
-# of a budget that already has a ceiling.
-#
-# The same control in a larger window is a smaller share of its region and so
-# scores lower, and a window large enough to need this path is the large case
-# by definition. That is the other reason not to sit on top of 2.25.
-PIXEL_CHANGE_THRESHOLD = 1.0
-
-
-# A window is sparse when the tree accounts for almost none of its area AND
-# reads back almost no text AND offers nowhere to type. Measured across real
-# windows: Linear 0.00 coverage / 0 characters — against Feishu 0.05 / 2431,
-# Lark 1.00 / 3399, TextEdit 0.15 / 659, Finder 0.11 / 1004, Calculator
-# 0.55 / 13. Every one of the three has to agree, because each is wrong on its
-# own: coverage alone would condemn TextEdit and Finder, whose one big text
-# area covers little but says plenty, and Feishu, which covers 5% of itself and
-# still hands over every message in the room; text alone would condemn
-# Calculator, which has nothing to say and everything to press.
-COVERAGE_LIMIT = 0.30
-TEXT_LIMIT = 200
-
-
-def sparseness(page):
-    """Does this window publish enough of itself to be driven by the tree alone?
-
-    Far fewer windows than expected. An Electron app renders its interface into
-    a web content area, and it is tempting to conclude that the area is closed
-    to the accessibility tree, because that is exactly what a shallow walk sees:
-    the native chrome — sidebar, toolbar, window buttons, all properly named —
-    wrapped around a silent hole. The hole is an artefact of the walk. Chromium
-    puts the web area nine levels below the window and the interface inside it
-    another ten to twenty below that, so a limit set for native windows stops in
-    the empty scaffolding above the content. See DEFAULT_MAX_DEPTH in the bridge.
-
-    What is left after fixing that is the genuine article: Linear publishes
-    three elements, no text and nothing to press at any depth. For a window like
-    that the tree has nothing to offer and the screenshot is the only way in.
-    """
-    frame = page.get("window_frame") or [0, 0, 0, 0]
-    area = max(1, frame[2] * frame[3])
-    # Nested elements double-count, which only makes a window look better
-    # covered than it is — never worse, so it cannot create a false positive.
-    coverage = min(1.0, sum(e["frame"][2] * e["frame"][3] for e in page["elements"]) / area)
-    actionable = [e for e in page["elements"] if e["operations"]]
-    editable = [e for e in page["elements"] if "TYPE_TEXT" in e["operations"]]
-    sparse = page.get("complete", True) and (not actionable or (
-        coverage < COVERAGE_LIMIT and len(page["text"]) < TEXT_LIMIT and not editable
-    ))
-    if any(e.get("identity_proven") is False for e in page["elements"]):
-        sparse = False
-    sparse_windows = []
-    for window in page.get("windows", []):
-        prefix = window["path"]
-        elements = [e for e in page["elements"] if e["path"] == prefix or e["path"].startswith(prefix + ".")]
-        local = sparseness({"elements": elements, "window_frame": window["frame"],
-                            "text": window.get("text", ""), "complete": page.get("complete", True)})
-        if local["sparse"]:
-            sparse_windows.append(prefix)
-    return {
-        "sparse": bool(sparse_windows) if page.get("windows") else sparse,
-        "sparse_windows": sparse_windows,
-        "actionable": len(actionable),
-        "named": len([e for e in actionable if e["label"]]),
-        "coverage": round(coverage, 3),
-    }
 
 
 class Desktop:
     """One app, observed as an indexed element table and driven by path."""
 
-    def __init__(self, app, *, menus=True, limit=250, activate=False):
+    def __init__(self, app, *, menus=True, limit=250):
         self.bridge = Bridge()
         status = self.bridge.call("status")
         if not status["accessibility"]:
@@ -362,48 +219,17 @@ class Desktop:
         self.instance = None
         self.menus = menus
         self.limit = limit
-        self.activation = self.bridge.call("activate", app=app) if activate else {}
 
     def observe(self):
         page = self.bridge.call("snapshot", app=self.app, menus=self.menus, limit=self.limit,
                                 process_instance=self.instance)
         self.instance = page.get("process_instance")
         page["observed_at"] = time.time()
-        page.update(sparseness(page))
         return page
 
     def permissions(self):
         """Recheck permissions in a new process, including mid-session grants."""
         return self.bridge.call("status")
-
-    def capture(self, width=1800, quality=0.6, page=None, window_id=None):
-        """A picture of the window, in a coordinate space a click can be named in.
-
-        Width and quality were varied separately, on one 2560-point Linear
-        window, against one tab whose position had been confirmed by clicking
-        it, with `deepseek-v4.1-flash` naming the point five times per cell:
-
-            1000 wide, quality 0.6   median 72px off, 0 of 5 within 15px
-            1000 wide, quality 0.85  median 72px off, 0 of 5 within 15px
-            1800 wide, quality 0.6   median  3px off, 5 of 5 within 15px
-            1800 wide, quality 0.85  median  3px off, 5 of 5 within 15px
-
-        So width is what mattered here and quality changed nothing, which is
-        why quality stays where it was and only the width moved. A 44 point tab
-        is 17 pixels across at 1000 and 31 at 1800. One window, one target, one
-        model: enough to set a default, not enough to call it a general rule.
-
-        The wider picture costs about 40% more prompt tokens on a window that
-        large — 1586 against 2225 — and nothing at all on a small one, because
-        the bridge never scales a capture up. 2200 wide billed the same 2226
-        tokens as 1800, which is a reason not to pay for more pixels here and
-        not evidence about what the model does or does not look at.
-        """
-        page = page or {}
-        windows = page.get("sparse_windows", [])
-        return self.bridge.call("capture", app=self.app, width=width, quality=quality,
-                                process_instance=self.instance, observation=page.get("observation"),
-                                surface_path=windows[0] if windows else None, window_id=window_id)
 
     def fresh(self, page):
         """Has the window's semantic state survived since this observation?"""
@@ -437,7 +263,7 @@ class Desktop:
             request["option_label"] = option["label"]
         if "key" in action:
             request["key"] = action["key"]
-        for field in ("x", "y", "scale", "window_id", "window_size", "start", "length", "end", "destination_path"):
+        for field in ("start", "length"):
             if field in action:
                 request[field] = action[field]
         if text is not None:

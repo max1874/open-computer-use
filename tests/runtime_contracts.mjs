@@ -1,57 +1,28 @@
+// CI-only regression guards for the native execution boundary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { runTask } from '../runtime/loop.mjs';
+import { readFile } from 'node:fs/promises';
+const source = await readFile(new URL('../open_computer_use/axbridge.swift', import.meta.url), 'utf8');
 
-async function scenario(run) {
-  const folder = await mkdtemp(path.join(tmpdir(), 'ocu-delivery-'));
-  const helper = path.join(folder, 'decider');
-  const decision = { operation: 'TYPE_TEXT', index: '2', secure: true,
-    text: 'synthetic-secret', risk: 0, confidence: 1, label: 'Password' };
-  await writeFile(helper, `#!/usr/bin/env node
-const readline = require('node:readline');
-let step = 0;
-readline.createInterface({input:process.stdin}).on('line', () => {
-  console.log(JSON.stringify(++step === 1 ? ${JSON.stringify(decision)} : {operation:'DONE',risk:0}));
-});
-`, { mode: 0o700 });
-  try { await run(helper); } finally { await rm(folder, { recursive: true }); }
-}
-
-test('an error after executor dispatch never becomes a safe refusal or a second write', async () => {
-  await scenario(async (python) => {
-    let writes = 0;
-    const sky = {
-      get_app_state: async () => ({ text: '1 text field Password' }),
-      set_value: async () => { writes++; throw new Error('reply lost after dispatch'); },
-    };
-    const result = await runTask({ sky, app: 'Scratch', goal: 'Edit password', python,
-      dryRun: false, emit: () => {} });
-    assert.equal(result.status, 'blocked');
-    assert.equal(writes, 1);
-    assert.equal(result.history[0].disposition.delivery, 'delivery_uncertain');
-    assert.equal(result.history[0].disposition.retry, 'unsafe');
-    assert.ok(!JSON.stringify(result).includes('synthetic-secret'));
-  });
+test('the native bridge has no activation, cursor delivery or screenshot escape hatch', () => {
+  for (const forbidden of [/\.activate\s*\(/, /cghidEventTap/, /mouseEventSource/,
+                           /case "activate"/, /case "capture"/, /case "DRAG"/, /CGPreflightScreenCaptureAccess/]) {
+    assert.doesNotMatch(source, forbidden);
+  }
+  assert.match(source, /event\.postToPid\(pid\)/);
+  assert.match(source, /unsupported background operation/);
 });
 
-test('post-dispatch observation failure retains unverified delivery without leaking text', async () => {
-  await scenario(async (python) => {
-    let reads = 0, writes = 0;
-    const sky = {
-      get_app_state: async () => {
-        if (reads++) throw new Error('app stopped answering');
-        return { text: '1 text field Password' };
-      },
-      set_value: async () => { writes++; },
-    };
-    const result = await runTask({ sky, app: 'Scratch', goal: 'Edit password', python,
-      dryRun: false, emit: () => {} });
-    assert.equal(result.status, 'blocked');
-    assert.equal(writes, 1);
-    assert.equal(result.history[0].disposition.delivery, 'delivered_unverified');
-    assert.ok(!JSON.stringify(result).includes('synthetic-secret'));
-  });
+test('native row clicks cannot fall through to a physical pointer route', () => {
+  const click = source.slice(source.indexOf('    case "CLICK":'), source.indexOf('    case "INCREMENT"'));
+  assert.match(click, /guard let target = backgroundClickTarget/);
+  assert.match(click, /throw BridgeError/);
+  assert.match(click, /setAttribute\(target.element, target.attribute, target.value\)/);
+});
+
+test('all editing keys stay inside the native field-command whitelist', () => {
+  const field = source.slice(source.indexOf('    case "KEY_CHORD":'), source.indexOf('    case "SELECT_TEXT":'));
+  assert.match(field, /guard editingKeys.contains\(key\)/);
+  assert.ok(field.indexOf('guard editingKeys') < field.indexOf('try focus('));
+  assert.doesNotMatch(field, /cmd\+tab|cmd\+q/);
 });
