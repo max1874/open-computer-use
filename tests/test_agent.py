@@ -19,7 +19,7 @@ class AgentContracts(unittest.TestCase):
         self.desktop.fresh.return_value = True
         self.desktop.act.return_value = {"disposition": disposition("delivered_unverified")}
         self.decision = {
-            "operation": "TYPE_TEXT", "target": "1", "text": "synthetic-input",
+            "operation": "TYPE_TEXT", "target": "e1", "text": "synthetic-input",
             "action": {"operation": "TYPE_TEXT", "path": "1", "label": "Message", "secure": True},
             "risk": 0, "risk_reason": "editing", "confidence": 1, "model": "fixture",
             "usage": {}, "latency_ms": 0, "offered": {},
@@ -71,7 +71,7 @@ class AgentContracts(unittest.TestCase):
         self.desktop.act.side_effect = BridgeError("disabled")
         with Agent("Scratch", "Edit message") as agent:
             for index, label in enumerate(("Message", "Second", "Third"), 1):
-                self.decision["target"] = str(index)
+                self.decision["target"] = f"e{index}"
                 self.decision["action"].update(path=str(index), label=label)
                 result = agent.command("tick")
             self.assertEqual(result["status"], "blocked")

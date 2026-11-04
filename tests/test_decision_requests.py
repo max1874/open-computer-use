@@ -31,6 +31,7 @@ class RequestContracts(unittest.TestCase):
                     state = json.loads(body["messages"][1]["content"])
                     self.assertEqual(state["goal"], case["goal"])
                     self.assertNotIn("screenshot", state)
+                    self.assertTrue(all(e["index"].startswith("e") for e in state["elements"]))
                     for op in ("DRAG", "DRAG_POINT", "CLICK_POINT", "TYPE_KEYS"):
                         self.assertNotIn(op, state["offered_operations"])
                     if case["history"]:
@@ -45,7 +46,7 @@ class RequestContracts(unittest.TestCase):
             {"index": "1", "path": "0.1", "role": "AXButton", "label": "Advance", "frame": [0, 0, 30, 30],
              "operations": ["PRESS"]}]}
         reply = {"answers": {"operation": {"choice": "PRESS", "confidence": 1},
-                             "press_target": {"choice": "1"}, "risk": {"score": 0}}}
+                             "press_target": {"choice": "e1"}, "risk": {"score": 0}}}
         with patch.dict(os.environ, {"JEV_API_KEY": "dummy"}, clear=True), patch(
             "open_computer_use.model.post_json", return_value=reply
         ):

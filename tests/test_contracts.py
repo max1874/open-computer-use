@@ -25,6 +25,27 @@ class DecisionContracts(unittest.TestCase):
         with patch.dict(os.environ, {"JEV_API_KEY": ""}), patch("open_computer_use.model.ask_chat", return_value=reply):
             return choose(self.page, "Edit the scratch document", [])
 
+    def test_numeric_labels_are_distinct_from_model_refs_and_keep_the_native_path(self):
+        self.page["elements"] = [
+            {"index": index, "path": path, "role": "AXButton", "label": label,
+             "frame": [0, 0, 30, 30], "operations": ["PRESS"]}
+            for index, path, label in [("2", "0.7", "Delete"), ("15", "0.3", "2")]]
+        elements, targets, _ = action_space(self.page)
+        self.assertEqual([(e["index"], e["label"]) for e in elements], [("e2", "Delete"), ("e15", "2")])
+        decision = self.decide({"operation": "PRESS", "press_target": "e15"})
+        self.assertEqual(decision["action"]["path"], "0.3")
+        with self.assertRaises(ValueError):
+            self.decide({"operation": "PRESS", "press_target": "2"})
+        self.assertEqual(self.page["elements"][1]["index"], "15")
+
+    def test_option_refs_are_prefixed_without_changing_native_choice(self):
+        element = self.page["elements"][0]
+        element.update(role="AXPopUpButton", label="Color", operations=["SELECT"],
+                       options=[{"index": "1:0", "child": 0, "label": "Green"}])
+        decision = self.decide({"operation": "SELECT", "select_target": "e1:0"})
+        self.assertEqual(decision["action"]["path"], "0.1")
+        self.assertEqual(decision["action"]["option"], 0)
+
     def test_retired_pointer_operations_cannot_be_selected(self):
         for op in ("DRAG", "DRAG_POINT", "CLICK_POINT", "TYPE_KEYS"):
             with self.subTest(operation=op), self.assertRaises(ValueError):
@@ -36,16 +57,16 @@ class DecisionContracts(unittest.TestCase):
         self.assertNotIn("CLICK", targets)
         self.page["background_clicks"] = ["1"]
         _, targets, _ = action_space(self.page)
-        self.assertEqual(targets["CLICK"]["1"]["op"], "CLICK")
+        self.assertEqual(targets["CLICK"]["e1"]["op"], "CLICK")
 
     def test_unoffered_shortcut_is_refused(self):
         with self.assertRaises(ValueError):
-            self.decide({"operation": "KEY_CHORD", "key_chord_target": "1", "key_chord_key": "cmd+q"})
+            self.decide({"operation": "KEY_CHORD", "key_chord_target": "e1", "key_chord_key": "cmd+q"})
 
     def test_negative_and_boolean_selections_are_refused(self):
         for start in (-1, True):
             with self.subTest(start=start), self.assertRaises(ValueError):
-                self.decide({"operation": "SELECT_TEXT", "select_text_target": "1",
+                self.decide({"operation": "SELECT_TEXT", "select_text_target": "e1",
                              "selection_start": start, "selection_length": 1})
 
     def test_window_context_is_only_added_when_it_distinguishes_targets(self):

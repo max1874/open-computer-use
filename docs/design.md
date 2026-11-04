@@ -6,7 +6,7 @@ The essential variables are the requested result in the target app and zero fore
 native observation → indexed operation/target choices → one guarded execution → native read-back
 ```
 
-`actions.py` owns the pure table and answer schema. `model.py` asks an OpenAI-compatible chat backend or Jev and validates its choice against that table. `Agent` owns prediction, risk approval and execution; public commands publish one snapshot. One history method owns identity and input redaction, and one observation method invalidates refusals when the window changes.
+`actions.py` owns the pure table and answer schema. Model element refs use an `e` prefix (for example `e15`) so a numeric button label such as `2` cannot be mistaken for the reference itself. The prefix never enters a native path or identity; menu refs already have their own `m` prefix. `model.py` asks an OpenAI-compatible chat backend or Jev and validates its choice against that table. `Agent` owns prediction, risk approval and execution; public commands publish one snapshot. One history method owns identity and input redaction, and one observation method invalidates refusals when the window changes.
 
 ## Delivery boundary
 

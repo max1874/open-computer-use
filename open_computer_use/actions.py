@@ -143,7 +143,8 @@ def action_space(page, refused=()):
         # Every operation on it has just been refused, so it is not a choice.
         if not operations and source["role"] != "AXTextArea" and source.get("identity_proven") is not False:
             continue
-        index = source["index"]
+        # References must not look like numeric control labels (Calculator digits).
+        index = "e" + source["index"]
         shown = {"index": index, "role": source["role"].removeprefix("AX")}
         # No invented label. Writing the role into the label field turned a
         # hundred anonymous containers into a hundred elements all called
@@ -175,7 +176,7 @@ def action_space(page, refused=()):
         for operation in operations:
             if operation == "SELECT":
                 for position, option in enumerate(source.get("options", [])):
-                    targets.setdefault("SELECT", {})[option["index"]] = {
+                    targets.setdefault("SELECT", {})["e" + option["index"]] = {
                         "operation": "SELECT",
                         "op": "SELECT",
                         "path": source["path"],
