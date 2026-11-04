@@ -40,4 +40,4 @@ One request chooses the operation, a speculative target for each operation, fiel
 
 The inspector displays the table, pending decision, risk and executed history. It binds to loopback, checks Host/Origin, requires a startup token and serializes commands. It has no activation control. Its `DONE` state remains a model claim unless an outcome check supplied evidence.
 
-Budgets remain 40 operations, 80 decisions and three consecutive unchanged actions. No new planner, retry framework or cycle detector is introduced.
+Budgets remain 40 operations, 80 decisions and three consecutive unchanged actions. History also records each pre-action fingerprint and editing parameters. Two delivered matching state/action pairs block a third input, including A → B → A cycles; refusals do not count and WAIT is exempt. The check runs before field-value generation, uses the existing redacted history path, and rechecks freshness before refusing. No parallel counter or planner state is added. A blocked repetition does not establish task completion or progress in hidden fields.
