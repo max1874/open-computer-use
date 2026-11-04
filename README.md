@@ -515,6 +515,36 @@ every step, and it is the same six presses either way.
 `scripts/check_bridge.py` reproduces the accessibility half with no model calls
 at all.
 
+### Sixteen tasks, six apps
+
+`evals/` runs sixteen tasks across Calculator, TextEdit, System Settings,
+Dictionary, Safari and Finder, each with a setup, a check that reads the app,
+and a model-free solution. `python -m evals.run --sensitivity` proves every
+check reads false before its solution and true after; `--backend jev` runs the
+agent, in the background, while a watcher records any moment a task app comes
+to the front. Single runs per task, jev deciding and `deepseek-flash` writing
+field values (2026-11-03):
+
+| build | passed | runs where the app came to the front |
+|---|---|---|
+| before | 6 / 16 | 0 |
+| background `CLICK`, named fields, repeat stop | 10 / 16 | 0 |
+| `e15` keys, row name fields as `CLICK` | 11 / 16 | 0 |
+
+One run per task is a reading, not a score. The five that still fail split
+into one fixable gap and two limits:
+
+- **System Settings › Keyboard** sits below the sidebar's visible rows, and
+  `SCROLL` moves only the main pane. Fixable; not yet done.
+- **Multi-digit entry on Calculator.** After the keys stopped colliding, jev
+  still loses its place inside a number — 27 entered as 2, 3; 1024 as 1, 1 —
+  on two of four sums. The table and the display are right; the choice is not.
+- **Opening a Finder folder from the background.** Selecting its row works.
+  Nothing tried opens it: `AXOpen` on the name returned `-25205`, `cmd+down`
+  posted to Finder's pid left the window where it was, and an inactive Finder
+  reports every menu item disabled. Asked to open a folder, the agent selects
+  it, and once reported `DONE` on the selection alone.
+
 ## Not taking the model's word for it
 
 `DONE` is the model's opinion about its own work. Give the agent a way to
