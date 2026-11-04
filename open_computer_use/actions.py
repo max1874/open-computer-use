@@ -6,8 +6,6 @@ from .questions import GUARD, TARGET, TEXT_VALUE
 
 
 CONTROLS = {
-    "SCROLL_DOWN": ("Scroll the main content down.", {"op": "SCROLL_DOWN"}),
-    "SCROLL_UP": ("Scroll the main content up.", {"op": "SCROLL_UP"}),
     "PRESS_RETURN": ("Press Return, to commit the focused field or accept a dialog.", {"op": "KEY", "key": "return"}),
     "PRESS_ESCAPE": ("Press Escape, to dismiss an open menu, popover, or sheet.", {"op": "KEY", "key": "esc"}),
     "WAIT": ("Wait briefly for the interface to settle.", {"op": "WAIT"}),
@@ -15,6 +13,8 @@ CONTROLS = {
 
 
 TARGETED = {
+    "SCROLL_UP": "Scroll an observed scroll area up.",
+    "SCROLL_DOWN": "Scroll an observed scroll area down.",
     "PRESS": "Press an element: a button, checkbox, row, tab, link, or disclosure triangle.",
     "TYPE_TEXT": "Enter or replace the whole contents of an editable field.",
     "PASTE_TEXT": "Insert Unicode text at the observed field's current selection.",
@@ -96,6 +96,8 @@ def scaffolding(candidates):
         if candidate["role"] == "AXGroup" and not candidate["label"] and not candidate.get("value")
     }
     for candidate in candidates:
+        if candidate["role"] == "AXScrollArea":
+            continue  # Its scroll action belongs to the container, not its children.
         inside = [
             other for other in candidates if other["path"].startswith(candidate["path"] + ".")
         ]

@@ -126,7 +126,7 @@ def run_once(task, binary, directory, max_decisions):
         if task.app == "Calculator" and record["initial_reading"] != "0":
             raise RuntimeError("The owned calculator was not cleared")
         if record["before"] is not False:
-            raise RuntimeError("The result check was already true after setup")
+            raise RuntimeError("The initial result check was not false after setup")
         phase("agent")
         with Agent(str(pid), task.goal, menus=False, approve=lambda decision: True) as agent:
             try:

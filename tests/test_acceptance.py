@@ -3,9 +3,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from evals.run import Budget, accepted
+from evals.tasks import TASKS
 
 
 class AcceptanceContracts(unittest.TestCase):
@@ -33,3 +34,18 @@ class AcceptanceContracts(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exhausted"):
                 Budget(client, path, 1).post("example")
             self.assertEqual(client.post.call_count, 1)
+
+    def test_settings_reads_the_detail_heading_not_the_selected_sidebar_label(self):
+        page = {"window": "", "elements": [
+            {"role": "AXScrollArea", "path": "0.sidebar", "label": "Sidebar"},
+            {"role": "AXStaticText", "path": "0.sidebar.0", "value": "Keyboard", "selected": True},
+            {"role": "AXScrollArea", "path": "0.detail", "label": "General"},
+            {"role": "AXStaticText", "path": "0.detail.0", "value": "General"}]}
+        task = next(t for t in TASKS if t.id == "settings-keyboard")
+        desktop = Mock(); desktop.observe.return_value = page
+        with patch("evals.tasks.Desktop", return_value=desktop):
+            self.assertEqual(task.read(123), (False, "General"))
+            page["elements"][-1]["value"] = "Keyboard"
+            self.assertEqual(task.read(123), (True, "Keyboard"))
+            page["elements"].pop(0)
+            self.assertEqual(task.read(123), (None, None))

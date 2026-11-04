@@ -38,3 +38,13 @@ test('editing requires a window editor at publication and delivery', () => {
   assert.match(execute, /!textEditor\(element, role: string\(element, kAXRoleAttribute\), surface: target.surface\)/);
   assert.match(execute, /throw BridgeError\(message: "target is not a supported window text editor"\)/);
 });
+
+test('scrolling uses a proven observed area and a writable native vertical bar', () => {
+  const execute = source.slice(source.indexOf('func executeAction('));
+  const scroll = execute.slice(execute.indexOf('    case "SCROLL_UP", "SCROLL_DOWN":'), execute.indexOf('    case "PRESS":'));
+  assert.ok(execute.indexOf('try observedTarget(request, app: app)') < execute.indexOf('    case "SCROLL_UP", "SCROLL_DOWN":'));
+  assert.match(scroll, /kAXScrollAreaRole/);
+  assert.match(scroll, /verticalScrollBar\(element\)/);
+  assert.match(scroll, /setAttribute\(bar, kAXValueAttribute/);
+  assert.doesNotMatch(source, /mainScrollArea|scrollWheelEvent/);
+});
