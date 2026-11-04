@@ -886,37 +886,26 @@ func snapshotJSON(_ snap: Snapshot) -> [String: Any] {
     ]
 }
 
-func observedTargets(_ request: [String: Any], app: NSRunningApplication) throws -> [String: ObservedTarget] {
+func observedTarget(_ request: [String: Any], app: NSRunningApplication) throws -> ObservedTarget {
     guard let token = request["observation"] as? String, let old = observations[token],
-        request["path"] is String else {
-        throw BridgeError(message: "stale: an observed element reference is required")
+        let path = request["path"] as? String, old.proven.contains(path), let target = old.targets[path] else {
+        throw BridgeError(message: "stale: a proven observed element reference is required")
     }
     guard try processInstance(app.processIdentifier) == old.instance else {
         throw BridgeError(message: "stale: the observed process restarted")
     }
-    let fields = ["path"]
-    for field in fields {
-        guard let path = request[field] as? String, old.proven.contains(path) else {
-            throw BridgeError(message: "stale: the target was not proven unique in its observation")
-        }
-    }
     let live = try snapshot(app: String(app.processIdentifier), windowIndex: nil, includeMenus: false,
                             limit: 250, maxDepth: DEFAULT_MAX_DEPTH)
     guard live.complete else { throw BridgeError(message: "stale: the identity census is incomplete") }
-    var resolved: [String: ObservedTarget] = [:]
-    for field in fields {
-        let target = old.targets[request[field] as! String]!
-        guard !(live.unprovenRoles[target.surface] ?? []).contains(target.identity.role) else {
-            throw BridgeError(message: "stale: a competing target's name could not be read")
-        }
-        let matches = live.targets.values.filter { CFEqual($0.surface, target.surface) && target.identity.couldMatch($0.identity) }
-        guard matches.count == 1, let match = matches.first,
-            target.identity.identifier.isEmpty || target.identity.identifier == match.identity.identifier else {
-            throw BridgeError(message: "stale: the target is missing or ambiguous")
-        }
-        resolved[field] = match
+    guard !(live.unprovenRoles[target.surface] ?? []).contains(target.identity.role) else {
+        throw BridgeError(message: "stale: a competing target's name could not be read")
     }
-    return resolved
+    let matches = live.targets.values.filter { CFEqual($0.surface, target.surface) && target.identity.couldMatch($0.identity) }
+    guard matches.count == 1, let match = matches.first,
+        target.identity.identifier.isEmpty || target.identity.identifier == match.identity.identifier else {
+        throw BridgeError(message: "stale: the target is missing or ambiguous")
+    }
+    return match
 }
 
 // MARK: - Execution
@@ -1181,8 +1170,8 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     }
 
     guard let path = request["path"] as? String else { throw BridgeError(message: "\(op) needs an element path") }
-    let targets = try observedTargets(request, app: app)
-    let element = targets["path"]!.element
+    let target = try observedTarget(request, app: app)
+    let element = target.element
     let secure = secureField(element)
     try requireReadable()
     if let expected = request["expect_secure"] as? Bool, expected != secure {
@@ -1218,7 +1207,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
         // the placeholder stopped being reported: in Music every TYPE_TEXT
         // aimed at the find field was refused as stale, 79 times in a row, for
         // a field that was exactly where it had always been.
-        let hay = (current + " " + targets["path"]!.identity.label).lowercased()
+        let hay = (current + " " + target.identity.label).lowercased()
         let needle = expect.lowercased()
         if !hay.contains(needle) {
             throw BridgeError(message: "stale: \(path) is now \(current), which no longer mentions \"\(expect)\"")
