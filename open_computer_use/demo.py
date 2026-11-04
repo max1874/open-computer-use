@@ -89,6 +89,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             with LOCK:
                 return self.reply(200, serialise(AGENT["agent"]))
+        if path == "/api/permissions":
+            bridge = Bridge()
+            try:
+                return self.reply(200, bridge.call("status"))
+            finally:
+                bridge.close()
         if path == "/api/apps":
             bridge = Bridge()
             try:

@@ -29,6 +29,10 @@ CONTROLS = {
 TARGETED = {
     "PRESS": "Press an element: a button, checkbox, row, tab, link, or disclosure triangle.",
     "TYPE_TEXT": "Enter or replace the whole contents of an editable field.",
+    "PASTE_TEXT": "Insert Unicode text at the observed field's current selection.",
+    "SELECT_TEXT": "Select a UTF-16 character range in an observed text field.",
+    "KEY_CHORD": "Send a keyboard editing command to an observed field.",
+    "DRAG": "Drag an observed element to another observed destination.",
     "SELECT": "Choose a value from a pop-up button's menu.",
     "MENU": "Run a menu-bar command by name, without opening the menu first.",
     "CLICK": (
@@ -51,6 +55,7 @@ TARGETED = {
 # goes wherever the app's own focus happens to be. Every other operation is
 # addressed to an element that was observed; these two are aimed at a picture.
 PIXEL_CONTROLS = {
+    "DRAG_POINT": ("Drag between two points in the screenshot's pixel coordinates.", {"op": "DRAG_POINT"}),
     "CLICK_POINT": (
         "Click a point in the screenshot, for something the window does not expose as an element. "
         "Give click_x and click_y in the screenshot's own pixel coordinates.",
@@ -167,10 +172,9 @@ def scaffolding(candidates):
     return drop
 
 
-# CLICK is addressed to an element, like PRESS, but delivered with the pointer,
-# like CLICK_POINT: the app has to be in front. So it sits on the `pointer`
-# permission rather than being offered whenever the element exists.
-POINTER_OPERATIONS = {"CLICK"}
+# CLICK needs pointer permission unless the bridge reports a native delivery
+# for this observed element. Pixel clicks always keep their existing guards.
+POINTER_OPERATIONS = {"CLICK", "DRAG"}
 
 
 def action_space(page, pixels=False, refused=(), pointer=False):
@@ -189,12 +193,16 @@ def action_space(page, pixels=False, refused=(), pointer=False):
     to act on that is the table, not the prompt.
     """
     refused = set(refused)
+    background_clicks = set(page.get("background_clicks", []))
     usable = [
         source
         for source in page["elements"]
         # An element with no usable operation is context, not a choice.
-        if [op for op in source["operations"] if op in TARGETED and (pointer or op not in POINTER_OPERATIONS)]
-        or source["role"] == "AXTextArea"
+        if any(
+            op in TARGETED and (pointer or op not in POINTER_OPERATIONS or (op == "CLICK" and source["index"] in background_clicks))
+            for op in source["operations"]
+        )
+        or source["role"] == "AXTextArea" or source.get("identity_proven") is False
     ]
     wrappers = scaffolding(usable) | icons(usable)
 
@@ -207,10 +215,10 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             for op in source["operations"]
             if op in TARGETED
             and (op, source["path"]) not in refused
-            and (pointer or op not in POINTER_OPERATIONS)
+            and (pointer or op not in POINTER_OPERATIONS or (op == "CLICK" and source["index"] in background_clicks))
         ]
         # Every operation on it has just been refused, so it is not a choice.
-        if not operations and source["role"] != "AXTextArea":
+        if not operations and source["role"] != "AXTextArea" and source.get("identity_proven") is not False:
             continue
         index = source["index"]
         shown = {"index": index, "role": source["role"].removeprefix("AX")}
@@ -221,9 +229,15 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             shown["label"] = source["label"]
         if source.get("secure"):
             shown["secure"] = True
+        if len(page.get("windows", [])) > 1 and source.get("window"):
+            shown["window"] = source["window"]
+        if source.get("identity_proven") is False:
+            shown["identity_proven"] = False
+        if source.get("subtree_truncated"):
+            shown["subtree_truncated"] = True
         shown["operations"] = operations
         name = source["label"] or source["role"].removeprefix("AX")
-        for key in ("value", "checked", "selected"):
+        for key in ("value", "checked", "selected", "selection"):
             value = source.get(key)
             # `checked` is about the control's own state, so False is news.
             # `selected` is False on almost everything and says nothing.
@@ -253,7 +267,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             else:
                 targets.setdefault(operation, {})[index] = {
                     "operation": operation,
-                    "op": operation,
+                    "op": "CLICK_BACKGROUND" if operation == "CLICK" and not pointer else operation,
                     "path": source["path"],
                     **identity,
                     "label": name,
@@ -286,6 +300,27 @@ def questions_for(targets, controls):
     return operations
 
 
+EDITING_KEYS = ["cmd+a", "cmd+c", "cmd+x", "cmd+v", "cmd+z", "cmd+shift+z", "cmd+left", "cmd+right",
+                "left", "right", "up", "down", "shift+left", "shift+right", "alt+left", "alt+right",
+                "shift+alt+left", "shift+alt+right", "delete", "forwarddelete", "tab", "shift+tab", "return", "escape"]
+
+
+def parameter_properties(operations, targets):
+    properties = {}
+    if "KEY_CHORD" in operations:
+        properties["key_chord_key"] = {"type": "string", "enum": EDITING_KEYS}
+    if "SELECT_TEXT" in operations:
+        bound = max((len(c.get("value", "").encode("utf-16-le")) // 2
+                     for c in targets["SELECT_TEXT"].values()), default=0)
+        for name in ("selection_start", "selection_length"):
+            properties[name] = {"type": "integer", "enum": list(range(bound + 1)),
+                                "description": "UTF-16 offset or length, assuming SELECT_TEXT runs."}
+    if "DRAG" in operations:
+        properties["drag_destination"] = {"type": "string", "enum": sorted(targets["DRAG"]),
+                                           "description": "Destination element, assuming DRAG runs."}
+    return properties
+
+
 def head_properties(operations, targets):
     """The fields the answer must contain: the operation, and one head per operation."""
     properties = {
@@ -308,11 +343,16 @@ def head_properties(operations, targets):
     # alphabetical, so a model emitted click_x before it had committed to an
     # operation, wrote null because it had not chosen CLICK_POINT yet, and then
     # chose CLICK_POINT. Every pixel decision came back with no point in it.
-    if "TYPE_TEXT" in targets:
-        properties["type_text_value"] = {
-            "type": ["string", "null"],
-            "description": TEXT_VALUE + " Answer as if TYPE_TEXT is the operation that runs.",
-        }
+    for operation in ("TYPE_TEXT", "PASTE_TEXT"):
+        if operation in targets:
+            properties[operation.lower() + "_value"] = {
+                "type": ["string", "null"],
+                "description": TEXT_VALUE + f" Answer as if {operation} is the operation that runs.",
+            }
+    properties.update(parameter_properties(operations, targets))
+    if "DRAG_POINT" in operations:
+        for name in ("drag_start_x", "drag_start_y", "drag_end_x", "drag_end_y"):
+            properties[name] = {"type": "number", "description": "Screenshot pixel coordinate assuming DRAG_POINT runs."}
     if "CLICK_POINT" in operations:
         point = "Answer as if CLICK_POINT is the operation that runs, whichever operation you choose."
         properties["click_x"] = {
@@ -528,6 +568,9 @@ def jev_questions(operations, targets):
             # space keys them by index, which is what they are turned back into.
             "criteria": {str(key): candidate.get("label") for key, candidate in candidates.items()},
         }
+    for name, spec in parameter_properties(operations, targets).items():
+        questions[name] = {"type": "choice", "instructions": spec.get("description", name),
+                           "criteria": {str(value): str(value) for value in spec["enum"]}}
     return questions
 
 
@@ -577,6 +620,10 @@ def ask_jev(state, operations, targets):
         by_text = {str(index): index for index in candidates}
         answer[name] = by_text.get(reply.get("choice"), reply.get("choice"))
 
+    for name, spec in parameter_properties(operations, targets).items():
+        picked_value = (answers.get(name) or {}).get("choice")
+        choices = {str(value): value for value in spec["enum"]}
+        answer[name] = choices.get(str(picked_value))
     rating = answers.get("risk") or {}
     if isinstance(rating.get("score"), (int, float)):
         answer["risk"] = rating["score"] / max(1, len(GUARD_LEVELS) - 1)
@@ -680,6 +727,8 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
     # model looking complete — the one kind of wrong table that cannot be
     # noticed from the inside. Said conditionally, so a window that fits pays
     # nothing for the warning.
+    if page.get("complete") is False:
+        state["window"].update(complete=False, truncations=page.get("truncations", []))
     if page.get("truncated"):
         state["table_is_incomplete"] = (
             f"This window has more elements than the {len(elements)} listed; the rest were cut off. "
@@ -759,6 +808,25 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
         elif operation == "TYPE_KEYS":
             action["label"] = "focused field"
 
+    if operation in {"KEY_CHORD", "SELECT_TEXT", "DRAG"}:
+        for name, spec in parameter_properties({operation}, targets).items():
+            if answer.get(name) not in spec["enum"] or isinstance(answer.get(name), bool):
+                raise ValueError(f"Invalid {name}; nothing executed.")
+        if operation == "KEY_CHORD":
+            action["key"] = answer["key_chord_key"]
+        elif operation == "SELECT_TEXT":
+            action.update(start=int(answer["selection_start"]), length=int(answer["selection_length"]))
+        else:
+            action["destination_path"] = targets["DRAG"][answer["drag_destination"]]["path"]
+    if operation == "DRAG_POINT":
+        coordinates = [number(answer.get(name)) for name in ("drag_start_x", "drag_start_y", "drag_end_x", "drag_end_y")]
+        for i, coordinate in enumerate(coordinates):
+            bound = capture["image_width" if i % 2 == 0 else "image_height"]
+            if coordinate is None or not 0 <= coordinate < bound:
+                raise ValueError("The drag point leaves the capture; nothing executed.")
+        action.update(start=coordinates[:2], end=coordinates[2:], scale=capture["scale"],
+                      window_id=capture["window_id"], window_size=capture["window_size"])
+
     risk = answer.get("risk")
     if not isinstance(risk, (int, float)) or not math.isfinite(risk):
         risk = 1.0  # An unreadable rating is treated as the consequential case.
@@ -766,7 +834,7 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
         "operation": operation,
         "target": target,
         "action": action,
-        "text": answer.get("keys_value") if operation == "TYPE_KEYS" else answer.get("type_text_value"),
+        "text": answer.get("keys_value") if operation == "TYPE_KEYS" else answer.get(operation.lower() + "_value"),
         "pixels": bool(capture) and operation in PIXEL_CONTROLS,
         "confidence": max(0.0, min(1.0, float(answer.get("confidence") or 0))),
         "risk": max(0.0, min(1.0, float(risk))),

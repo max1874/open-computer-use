@@ -93,7 +93,7 @@ h2:not(:first-child) { margin-top: 18px; }
 
 .row {
   display: grid;
-  grid-template-columns: 34px 1fr auto;
+  grid-template-columns: 34px minmax(0, 1fr) minmax(0, auto);
   gap: 9px;
   align-items: baseline;
   padding: 6px 8px;
@@ -104,10 +104,10 @@ h2:not(:first-child) { margin-top: 18px; }
 }
 .row.chosen { border-color: var(--accent); background: #12201a; }
 .idx { color: var(--accent); }
-.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name { min-width: 0; overflow-wrap: anywhere; }
 .role { color: #6d7b8a; font-size: 11px; }
 .val { color: var(--warn); }
-.ops { display: flex; gap: 4px; }
+.ops { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 220px; }
 .op { font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--dim); }
 
 .decision { display: flex; flex-direction: column; gap: 12px; }
@@ -141,5 +141,9 @@ footer { border-top: 1px solid var(--line); padding: 8px 18px; display: flex; ga
 .pill.needs_approval { color: #241a02; background: var(--warn); }
 
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 600px) {
+  .row { grid-template-columns: 34px minmax(0, 1fr); }
+  .ops { grid-column: 2; justify-content: flex-start; max-width: none; }
+}
 
 .tag.warn { color: var(--bad, #d2544d); }

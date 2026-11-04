@@ -31,6 +31,7 @@ import re
 # Roles as Computer Use spells them: lower case, spaces, no AX prefix. Longest
 # first, because "close button" has to win against "button".
 ROLES = [
+    "secure text field",
     "standard window",
     "split group",
     "scroll area",
@@ -93,7 +94,7 @@ PRESSABLE = {
     "combo box",
     "stepper",
 }
-EDITABLE = {"text field", "search field", "combo box"}
+EDITABLE = {"text field", "secure text field", "search field", "combo box"}
 # Everything that carries content and answers to no action of its own. Computer
 # Use will click any index, so these are reachable — which is the same argument
 # that put CLICK in the bridge, arrived at from the other direction.
@@ -135,6 +136,8 @@ def parse(text, limit=250):
         app, window = header.group("app").strip(), header.group("window").strip()
 
     elements, texts = [], []
+    omitted = []
+    nodes_observed = 0
     stack = []  # (indent, path) of the open ancestors
     for line in lines:
         match = LINE.match(line)
@@ -144,6 +147,9 @@ def parse(text, limit=250):
         index = match.group("index")
         rest = match.group("rest").strip()
 
+        nodes_observed += 1
+        secure = "(secure)" in rest or rest.startswith("secure text field")
+        rest = rest.replace("(secure)", "").strip()
         enabled = "(disabled)" not in rest
         settable = "(settable)" in rest
         rest = rest.replace("(disabled)", "").replace("(settable)", "").strip()
@@ -151,7 +157,7 @@ def parse(text, limit=250):
         remainder = rest[len(role) :].strip() if role else rest
         name, fields = split_fields(remainder)
         label = name or fields.get("Description", "") or fields.get("Help", "")
-        value = fields.get("Value", "")
+        value = "" if secure else fields.get("Value", "")
         actions = [a.strip() for a in fields.get("Secondary Actions", "").split(",") if a.strip()]
 
         while stack and stack[-1][0] >= indent:
@@ -159,6 +165,9 @@ def parse(text, limit=250):
         path = f"{stack[-1][1]}.{index}" if stack else index
         stack.append((indent, path))
 
+        if len(elements) >= limit:
+            omitted.append(path)
+            continue
         if role in ("static text", "text") and label:
             texts.append(label)
 
@@ -181,7 +190,8 @@ def parse(text, limit=250):
                 "index": index,
                 "path": path,
                 "role": "AX" + "".join(part.capitalize() for part in (role or "unknown").split()),
-                "subrole": "",
+                "subrole": "AXSecureTextField" if secure else "",
+                "secure": secure,
                 "identifier": fields.get("ID", ""),
                 "label": label,
                 "value": value,
@@ -198,9 +208,8 @@ def parse(text, limit=250):
                 "describe": f"{role} {label}".strip(),
             }
         )
-        if len(elements) >= limit:
-            break
-
+    for element in elements:
+        element["subtree_truncated"] = any(path.startswith(element["path"] + ".") for path in omitted)
     return {
         "app": app,
         "window": window,
@@ -214,7 +223,10 @@ def parse(text, limit=250):
         # change. The bridge can afford to be subtler because it knows which
         # part of an element moved.
         "fingerprint": str(hash(text)),
-        "truncated": len(elements) >= limit,
+        "truncated": bool(omitted),
+        "complete": not omitted,
+        "nodes_observed": nodes_observed,
+        "truncations": [{"path": path, "reason": "element_budget"} for path in omitted[:50]],
         "active": None,
         "sparse": False,
         "actionable": sum(1 for e in elements if e["operations"]),

@@ -26,7 +26,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function decider({ python = "python3", env = {} } = {}) {
   const child = spawn(python, ["-m", "open_computer_use.decide"], {
     cwd: REPO,
-    env: { ...process.env, ...env },
+    // Sandboxed hosts may expose child_process without a global process object.
+    env: typeof process === "undefined"
+      ? (Object.keys(env).length ? env : undefined)
+      : { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buffer = "";
@@ -129,22 +132,35 @@ export async function runTask({
       const record = {
         operation: decision.operation,
         label: decision.label,
-        text: decision.text ?? null,
+        text: decision.secure ? null : decision.text ?? null,
+        secure: Boolean(decision.secure),
+        disposition: { delivery: "delivery_uncertain", retry: "unsafe" },
         window_changed: null,
       };
       history.push(record);
       try {
         await perform(sky, app, decision);
       } catch (error) {
-        // The executor refused, so nothing ran, so the run continues — and
-        // that target is not offered again until the tree changes.
+        if (error.disposition?.delivery !== "not_delivered") {
+          record.outcome = "unknown";
+          return finish("blocked", { step, message: "Input may have been delivered. Inspect the app before continuing." });
+        }
+        record.disposition = { delivery: "not_delivered", retry: "safe" };
         record.outcome = "failed";
         record.window_changed = false;
         if (decision.index != null) refused = refused.concat([[decision.operation, decision.index]]);
         emit(`      refused: ${error.message}`);
         continue;
       }
-      const after = await sky.get_app_state({ app, disableDiff: true });
+      record.disposition = decision.operation === "WAIT"
+        ? { delivery: "not_delivered", retry: "safe" }
+        : { delivery: "delivered_unverified", retry: "unsafe" };
+      let after;
+      try {
+        after = await sky.get_app_state({ app, disableDiff: true });
+      } catch {
+        return finish("blocked", { step, message: "Input completed, but its result could not be observed. Inspect the app before continuing." });
+      }
       record.window_changed = after.text !== state.text;
       if (record.window_changed) refused = [];
       emit(`      ${record.window_changed ? "the window changed" : "nothing changed"}`);
@@ -161,6 +177,11 @@ export async function runTask({
 
   function finish(status, extra) {
     emit(`[done] ${status}${extra.message ? ": " + extra.message : ""}`);
+    if (extra.decision?.secure) {
+      const decision = extra.decision;
+      extra.decision = { ...decision, text: null,
+        risk_reason: decision.text ? decision.risk_reason?.split(decision.text).join("[redacted]") : decision.risk_reason };
+    }
     return { status, history, ...extra };
   }
 }

@@ -194,6 +194,11 @@ SETTLE_MS = {
     "INCREMENT": 60,
     "DECREMENT": 60,
     "TYPE_TEXT": 25,
+    "PASTE_TEXT": 40,
+    "KEY_CHORD": 80,
+    "SELECT_TEXT": 25,
+    "DRAG": 150,
+    "DRAG_POINT": 150,
     "WAIT": 150,
     # A web interface answers a click by re-rendering, which is slower than a
     # native control flipping state, and nothing here can read that it finished.
@@ -316,11 +321,22 @@ def sparseness(page):
     coverage = min(1.0, sum(e["frame"][2] * e["frame"][3] for e in page["elements"]) / area)
     actionable = [e for e in page["elements"] if e["operations"]]
     editable = [e for e in page["elements"] if "TYPE_TEXT" in e["operations"]]
-    sparse = not actionable or (
+    sparse = page.get("complete", True) and (not actionable or (
         coverage < COVERAGE_LIMIT and len(page["text"]) < TEXT_LIMIT and not editable
-    )
+    ))
+    if any(e.get("identity_proven") is False for e in page["elements"]):
+        sparse = False
+    sparse_windows = []
+    for window in page.get("windows", []):
+        prefix = window["path"]
+        elements = [e for e in page["elements"] if e["path"] == prefix or e["path"].startswith(prefix + ".")]
+        local = sparseness({"elements": elements, "window_frame": window["frame"],
+                            "text": window.get("text", ""), "complete": page.get("complete", True)})
+        if local["sparse"]:
+            sparse_windows.append(prefix)
     return {
-        "sparse": sparse,
+        "sparse": bool(sparse_windows) if page.get("windows") else sparse,
+        "sparse_windows": sparse_windows,
         "actionable": len(actionable),
         "named": len([e for e in actionable if e["label"]]),
         "coverage": round(coverage, 3),
@@ -343,18 +359,24 @@ class Desktop:
             self.close()
             raise RuntimeError("The screen is locked; the accessibility tree is empty until it is unlocked.")
         self.app = app
+        self.instance = None
         self.menus = menus
         self.limit = limit
-        if activate:
-            self.bridge.call("activate", app=app)
+        self.activation = self.bridge.call("activate", app=app) if activate else {}
 
     def observe(self):
-        page = self.bridge.call("snapshot", app=self.app, menus=self.menus, limit=self.limit)
+        page = self.bridge.call("snapshot", app=self.app, menus=self.menus, limit=self.limit,
+                                process_instance=self.instance)
+        self.instance = page.get("process_instance")
         page["observed_at"] = time.time()
         page.update(sparseness(page))
         return page
 
-    def capture(self, width=1800, quality=0.6):
+    def permissions(self):
+        """Recheck permissions in a new process, including mid-session grants."""
+        return self.bridge.call("status")
+
+    def capture(self, width=1800, quality=0.6, page=None, window_id=None):
         """A picture of the window, in a coordinate space a click can be named in.
 
         Width and quality were varied separately, on one 2560-point Linear
@@ -377,12 +399,16 @@ class Desktop:
         tokens as 1800, which is a reason not to pay for more pixels here and
         not evidence about what the model does or does not look at.
         """
-        return self.bridge.call("capture", app=self.app, width=width, quality=quality)
+        page = page or {}
+        windows = page.get("sparse_windows", [])
+        return self.bridge.call("capture", app=self.app, width=width, quality=quality,
+                                process_instance=self.instance, observation=page.get("observation"),
+                                surface_path=windows[0] if windows else None, window_id=window_id)
 
     def fresh(self, page):
         """Has the window's semantic state survived since this observation?"""
         try:
-            now = self.bridge.call("fingerprint", app=self.app, limit=self.limit)
+            now = self.bridge.call("fingerprint", app=self.app, limit=self.limit, process_instance=self.instance)
         except BridgeError:
             return False
         return now["fingerprint"] == page["fingerprint"]
@@ -390,7 +416,8 @@ class Desktop:
     def act(self, action, page, text=None):
         """Execute one chosen action. A refused guard raises; nothing runs twice."""
         operation = action["operation"]
-        request = {"app": self.app, "op": action.get("op", operation)}
+        request = {"app": self.app, "op": action.get("op", operation),
+                   "process_instance": page.get("process_instance"), "observation": page.get("observation")}
         if "path" in action:
             request["path"] = action["path"]
             # The element at that path must still be the one that was chosen.
@@ -403,9 +430,14 @@ class Desktop:
             request["menu"] = action["menu"]
         if "option" in action:
             request["option"] = action["option"]
+            source = next((e for e in page["elements"] if e["path"] == action.get("path")), {})
+            option = next((o for o in source.get("options", []) if o["child"] == action["option"]), None)
+            if option is None:
+                raise BridgeError("The selected option was not present in the observation")
+            request["option_label"] = option["label"]
         if "key" in action:
             request["key"] = action["key"]
-        for field in ("x", "y", "scale", "window_id", "window_size"):
+        for field in ("x", "y", "scale", "window_id", "window_size", "start", "length", "end", "destination_path"):
             if field in action:
                 request[field] = action[field]
         if text is not None:

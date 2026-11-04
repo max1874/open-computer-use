@@ -141,14 +141,14 @@ class Agent:
             # that is the run taking the screen as surely as any step in it.
             # Summing this over the steps alone reported False for a run that
             # had already brought the window forward to begin with.
-            took_focus=bool(activate),
-            activated_at_start=bool(activate),
+            took_focus=bool(self.desktop.activation.get("took_focus")),
+            activated_at_start=bool(self.desktop.activation.get("frontmost")),
             elapsed_ms=0,
             started_at=None,
         )
 
     def snapshot(self):
-        elements, targets, _ = action_space(self.state["page"])
+        elements, targets, _ = action_space(self.state["page"], pointer=self.pointer)
         return {
             **{k: v for k, v in self.state.items() if k != "page"},
             "decision": public_decision(self.state["decision"]),
@@ -238,7 +238,7 @@ class Agent:
             capture = None
             if state["page"]["sparse"] and not self.pixels:
                 state["note"] = (
-                    "This window publishes almost nothing to the accessibility tree. "
+                    "An observed window publishes almost nothing to the accessibility tree. "
                     "Pass pixels=True to let the model see a picture of it."
                 )
             elif self.pixels and state["page"]["sparse"]:
@@ -254,12 +254,12 @@ class Agent:
                 }
                 state["sparseness"]["text"] = len(state["page"].get("text") or "")
                 try:
-                    capture = self.desktop.capture()
+                    capture = self.desktop.capture(page=state["page"])
                 except BridgeError as error:
                     state["capture_error"] = str(error)
                 if capture and not self.pointer:
                     state["note"] = (
-                        "This window publishes almost nothing to the accessibility tree, so the "
+                        "An observed window publishes almost nothing to the accessibility tree, so the "
                         "model is being shown a picture of it. Clicking a point in that picture "
                         "needs the app in front; pass activate=True to allow it."
                     )
@@ -345,7 +345,7 @@ class Agent:
                     text = decision.get("text")
                     if not text:
                         raise ValueError("TYPE_KEYS came back without text; nothing was typed.")
-                elif operation == "TYPE_TEXT":
+                elif operation in {"TYPE_TEXT", "PASTE_TEXT"}:
                     if not self.desktop.fresh(page):
                         raise StaleWindow("The window changed before the value was settled. Choose again.")
                     text = decision.get("text")
@@ -548,7 +548,7 @@ class Agent:
                 # inside it, so the picture is what says whether the click
                 # landed. A click that changed nothing visible missed.
                 try:
-                    after = self.desktop.capture()
+                    after = self.desktop.capture(window_id=self.capture["window_id"])
                     difference = thumbnail_difference(self.capture.get("thumbnail"), after.get("thumbnail"))
                     if difference is not None:
                         changed = difference >= PIXEL_CHANGE_THRESHOLD

@@ -40,9 +40,11 @@ function renderElements(state) {
         const hit = chosen && (chosen === element.index || String(chosen).startsWith(element.index + ":"));
         return `<div class="row ${hit ? "chosen" : ""}">
           <span class="idx">[${escape(element.index)}]</span>
-          <span class="name">${escape(element.label)}
+          <span class="name" title="${escape([element.label, element.role, element.window, value].filter(Boolean).join(" · "))}">${escape(element.label)}
             <span class="role">${escape(element.role)}</span>
-            ${value ? `<span class="val">· ${escape(value)}</span>` : ""}</span>
+            ${value ? `<span class="val">· ${escape(value)}</span>` : ""}
+            ${element.window ? `<span class="role">· ${escape(element.window)}</span>` : ""}
+            ${element.identity_proven === false ? `<span class="role">· target unavailable</span>` : ""}</span>
           <span class="ops">${element.operations.map((op) => `<span class="op">${escape(op)}</span>`).join("")}</span>
         </div>`;
       })

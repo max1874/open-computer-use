@@ -17,7 +17,7 @@ it assumes.
 
 ## The snapshot
 
-`axbridge.swift` walks the focused window once and produces, in a single
+`axbridge.swift` walks the app’s accessible windows and open menus and produces, in a single
 traversal: roles, names, values, checked and selected states, enabled state,
 geometry, the operations each element supports, and the visible static text.
 Zero-size elements and elements outside the window's bounds are dropped, so
@@ -42,18 +42,25 @@ skipped: they are system-wide or history noise, never the goal.
 
 ## Identity and freshness
 
-Elements are addressed by path — child indices from the application element —
-because the accessibility API offers no stable node identity across
-observations. A path is therefore a guess about a tree that may have moved, and
-every execution carries the label the decision was made about. If the element
-at that path no longer mentions it, the operation is refused rather than
-performed on whatever is there now.
+Each observation owns a bounded set of captured element references and a process
+instance (PID plus start time). A role, label and optional identifier must be
+unique across the entire captured native surface, including unpublished nodes.
+An unread competing name or an incomplete census makes that identity unproven.
+Execution takes a fresh census in the same native surface and re-identifies the
+unique target, so a reordered path can still resolve. Source and destination of
+a drag share that census. A replaced process invalidates the observation.
+
+Metadata is batched per node and cached only for that traversal. Value reads
+happen after secure classification. Optional metadata failures stay unknown;
+unknown editable subroles are treated as secure. Do not filter the batch through
+`AXUIElementCopyAttributeNames`: Calculator answers digit descriptions it omits
+from that list. Control and content publication budgets remain separate from
+the depth and node limits of the full identity census.
 
 The freshness fingerprint is semantic: window title, plus role, label, value,
 enabled, checked and selected for every element, plus the visible text.
 Geometry is deliberately excluded, so a window that was merely moved or resized
-is still fresh. The check runs without building the element table or reading
-the menus, which makes it about as cheap as a snapshot minus serialisation.
+is still fresh. The check uses the same snapshot material without reading the menu bar.
 
 Guards are scoped on purpose. Before a text value is generated and before a
 `DONE` is accepted, the whole window must still be fresh. Before an individual
@@ -83,7 +90,10 @@ and their input is left out of public decisions and history.
 
 ## Focus
 
-Everything except the menu bar works on a window that is not in front. Reading
+Accessibility actions and value writes can work on a window that is not in
+front. Native row selection also provides background CLICK where supported.
+Pointer operations require explicit activation, foreground ownership and
+uncovered endpoints and paths. Reading
 the tree, pressing by path and setting a value all go through the accessibility
 API, which does not involve the pointer, the keyboard focus or the screen.
 
@@ -156,32 +166,24 @@ application.
 
 ## What is not solved
 
-Multi-window and multi-app workflows are out of scope: one focused window of
-one app. Drag, text selection and custom-drawn canvases have no accessible
-representation to address and no operation here that reaches them.
+Multi-app workflows remain out of scope. A run observes one application's
+windows and open menus. Native editable fields support UTF-16 selection,
+Unicode insertion and whitelisted editing keys. Indexed dragging uses observed
+source and destination references; sparse canvases can use screenshot-bound
+points. Both drag forms require foreground pointer delivery.
 
-There is a pixel fallback, and this paragraph said there was not for as long as
-it existed. It is for a window whose tree is genuinely empty — capture, a point
-named in the picture, a real click — and it is strictly worse than everything
-else here: the point cannot be checked against anything before it lands, and
-the delivery requires the app in front. It is described in the README under
-"When the window says nothing".
+An arbitrary background mouse click remains unimplemented: posting mouse events
+to a process did not change the measured app. Native row selection works only
+where the app exposes that capability. It never silently falls back to HID.
 
-Web content is not the gap it was recorded as either. Chrome publishes a usable
-tree, forms in it read and write, and the earlier claim came from the same
-traversal limit that made Electron apps look empty. What a browser needs beyond
-that — tabs, navigation, more than one page — is what is missing.
+The pixel fallback captures only a window measured sparse; incomplete identity
+reads cannot justify it. The capture's window identity and dimensions travel
+with the action. Delivery alone does not prove a canvas received the intended
+drag, so acceptance reads its resulting state independently.
 
-An open menu is its own window, and the snapshot reads the focused one, so
-nothing here can see a menu while it is open. Two things sit behind that.
-`AXShowMenu` is not in the action space, and `SELECT` — which needs a pop-up
-button's menu items and reads them as accessibility children — has never been
-offered: of 40 pop-up and menu buttons counted across five running apps, none
-exposed a menu item while closed, so the target set is always empty and the
-operation removes itself. `PRESS` is offered on those elements instead and does
-open the menu; what follows is unreadable. Why they are empty is not
-established — the 40 were web-view and toolbar buttons, with no classic
-`NSPopUpButton` among them.
+A native popup now exposes its open menu in the snapshot and SELECT polls a
+read-back without repeating input. AXShowMenu stays unoffered because opening
+context menus takes focus. A closed popup with no options offers PRESS first.
 
 Menu items whose titles change with document state kept reporting their old
 title for seconds after the state changed, so state-dependent menu commands are
