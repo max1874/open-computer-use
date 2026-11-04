@@ -322,22 +322,6 @@ func withoutScaffolding(_ text: String) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-/// Resolve "0.3.1" — child indices from the application element.
-func resolve(_ app: NSRunningApplication, _ path: String) throws -> AXUIElement {
-    var element = appElement(app)
-    guard !path.isEmpty else { return element }
-    for part in path.split(separator: ".") {
-        guard let index = Int(part) else { throw BridgeError(message: "bad path component \"\(part)\"") }
-        let kids = children(element)
-        try requireReadable()
-        guard index >= 0, index < kids.count else {
-            throw BridgeError(message: "path \(path) is stale: child \(index) of \(kids.count) does not exist")
-        }
-        element = kids[index]
-    }
-    return element
-}
-
 // MARK: - The element table
 
 /// Roles that accept typed text. Treating every text-ish control as editable
@@ -1193,6 +1177,39 @@ func surfaceWindow(_ app: NSRunningApplication, _ surface: AXUIElement) throws -
     return (CGWindowID(id), rect)
 }
 
+/// Prepare the whole gesture before dispatch, then own its button release and pointer restoration.
+func postPointer(_ sequence: [(type: CGEventType, point: CGPoint, delay: Int)],
+                 restoreDelay: Int = 0, beforePress: (() throws -> Void)? = nil) throws {
+    let restore = CGEvent(source: nil)?.location
+    let events = try sequence.map { step -> CGEvent in
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: step.type,
+                                  mouseCursorPosition: step.point, mouseButton: .left) else {
+            throw BridgeError(message: "could not prepare pointer events")
+        }
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        return event
+    }
+    var held = false
+    defer {
+        if held { events.last!.post(tap: .cghidEventTap) }
+        if let restore, let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                           mouseCursorPosition: restore, mouseButton: .left) {
+            sleepMs(restoreDelay)
+            move.post(tap: .cghidEventTap)
+        }
+    }
+    try requireReadable()
+    for (step, event) in zip(sequence, events) {
+        try requireProcess()
+        if step.type == .leftMouseDown { try beforePress?() }
+        dispatchStarted = true
+        event.post(tap: .cghidEventTap)
+        if step.type == .leftMouseDown { held = true }
+        if step.type == .leftMouseUp { held = false }
+        sleepMs(step.delay)
+    }
+}
+
 func drag(_ app: NSRunningApplication, from start: CGPoint, to end: CGPoint,
           sourceWindow: CGWindowID, destinationWindow: CGWindowID) throws -> [String: Any] {
     guard frontmostPID() == app.processIdentifier else {
@@ -1211,33 +1228,9 @@ func drag(_ app: NSRunningApplication, from start: CGPoint, to end: CGPoint,
             throw BridgeError(message: "the drag path is covered by another app or leaves the observed windows")
         }
     }
-    let restore = CGEvent(source: nil)?.location
     let types: [CGEventType] = [.leftMouseDown] + Array(repeating: .leftMouseDragged, count: 16) + [.leftMouseUp]
     let locations = [start] + Array(points.dropFirst()) + [end]
-    let events = try zip(types, locations).map { type, point -> CGEvent in
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
-            throw BridgeError(message: "could not prepare drag events")
-        }
-        event.setIntegerValueField(.mouseEventClickState, value: 1)
-        return event
-    }
-    var held = false
-    // Always release a held button if process validation fails midway.
-    defer {
-        if held { events.last!.post(tap: .cghidEventTap) }
-        if let restore, let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                           mouseCursorPosition: restore, mouseButton: .left) {
-            move.post(tap: .cghidEventTap)
-        }
-    }
-    for (type, event) in zip(types, events) {
-        try requireProcess()
-        dispatchStarted = true
-        event.post(tap: .cghidEventTap)
-        if type == .leftMouseDown { held = true }
-        if type == .leftMouseUp { held = false }
-        sleepMs(25)
-    }
+    try postPointer(zip(types, locations).map { (type: $0, point: $1, delay: 25) })
     return ["detail": "drag delivered", "mechanism": "HID (real pointer)", "verified": false]
 }
 
@@ -1421,43 +1414,12 @@ func postClick(
             message: "refused: \(Int(point.x)),\(Int(point.y)) is covered by \(owner). "
                 + "Raise \(app.localizedName ?? "the app") first, or choose a point that is not occluded.")
     }
-    let restore = CGEvent(source: nil)?.location
-    // All three are built before any of them is posted. Building the mouse-up
-    // lazily, after the mouse-down had already gone to the window server,
-    // would leave the button held down on a real machine and report it as a
-    // click that failed. Nothing can recover from that afterwards, so the only
-    // failure this is allowed to have is one that happens before it starts.
     let sequence: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
-    let events: [CGEvent] = try sequence.map { type in
-        guard let event = CGEvent(
-            mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        else { throw BridgeError(message: "could not build a click event") }
-        event.setIntegerValueField(.mouseEventClickState, value: 1)
-        return event
-    }
-    var held = false
-    defer {
-        // Process replacement must never strand a button already held at HID.
-        if held { events.last!.post(tap: .cghidEventTap) }
-        if let restore, let move = CGEvent(
-            mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: restore, mouseButton: .left) {
-            sleepMs(40)
-            move.post(tap: .cghidEventTap)
+    try postPointer(sequence.map { (type: $0, point: point, delay: $0 == .mouseMoved ? 30 : 40) },
+                    restoreDelay: 40) {
+        guard frontmostPID() == app.processIdentifier, frontWindow(at: point)?.id == id else {
+            throw BridgeError(message: "the click target lost foreground ownership")
         }
-    }
-    try requireReadable()
-    for (type, event) in zip(sequence, events) {
-        try requireProcess()
-        if type == .leftMouseDown {
-            guard frontmostPID() == app.processIdentifier, frontWindow(at: point)?.id == id else {
-                throw BridgeError(message: "the click target lost foreground ownership")
-            }
-        }
-        dispatchStarted = true
-        event.post(tap: .cghidEventTap)
-        if type == .leftMouseDown { held = true }
-        if type == .leftMouseUp { held = false }
-        sleepMs(type == .mouseMoved ? 30 : 40)
     }
     return [
         "ok": true,

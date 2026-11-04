@@ -15,6 +15,14 @@ Operation and target questions receive the same next-step rules. A target
 question cannot read the operation answer, so its premise names the operation
 it assumes.
 
+The Python boundaries follow that loop. `actions.py` owns the pure action table
+and answer schema, `model.py` owns provider requests and answer interpretation,
+and `Agent` coordinates prediction and execution. Public commands publish a
+snapshot once; one record method owns history identity and input redaction.
+All later observations update the run through one method, which invalidates
+refusals when the window changes. The Swift input layer similarly shares one
+pointer dispatcher for event preparation, release and cursor restoration.
+
 ## The snapshot
 
 `axbridge.swift` walks the app’s accessible windows and open menus and produces, in a single
