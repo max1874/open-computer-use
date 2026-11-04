@@ -47,4 +47,8 @@ test('scrolling uses a proven observed area and a writable native vertical bar',
   assert.match(scroll, /verticalScrollBar\(element\)/);
   assert.match(scroll, /setAttribute\(bar, kAXValueAttribute/);
   assert.doesNotMatch(source, /mainScrollArea|scrollWheelEvent/);
+  const bar = source.slice(source.indexOf('func verticalScrollBar('), source.indexOf('func operations('));
+  assert.match(bar, /guard !secureField\(area\) else \{ return nil \}/);
+  assert.ok(bar.indexOf('guard !secureField(area)') < bar.indexOf('children(area)'));
+  assert.match(source, /if role == kAXScrollAreaRole, !secureField\(element\) \{/);
 });

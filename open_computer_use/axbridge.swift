@@ -456,7 +456,7 @@ func label(of element: AXUIElement, role: String) -> String {
             return text
         }
     }
-    if role == kAXScrollAreaRole {
+    if role == kAXScrollAreaRole, !secureField(element) {
         for child in children(element) where [kAXOutlineRole, kAXTableRole, kAXListRole].contains(string(child, kAXRoleAttribute)) {
             let name = string(child, kAXDescriptionAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
             if !name.isEmpty { return name }
@@ -518,6 +518,7 @@ func popupOptions(_ element: AXUIElement, index: String) -> [[String: Any]] {
 /// AX scroll bars publish normalized positions. Use their writable value:
 /// SwiftUI can advertise page-scroll actions and then reject those actions.
 func verticalScrollBar(_ area: AXUIElement) -> (bar: AXUIElement, position: Double, step: Double)? {
+    guard !secureField(area) else { return nil }
     guard let bar = children(area).first(where: {
         string($0, kAXRoleAttribute) == kAXScrollBarRole
             && string($0, kAXOrientationAttribute) == "AXVerticalOrientation"
