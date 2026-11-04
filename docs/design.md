@@ -12,6 +12,8 @@ native observation → indexed operation/target choices → one guarded executio
 
 The native bridge has no app-activation, mouse-event or screenshot entry point. Retired operations are rejected before dispatch. `CLICK` can only use the captured element's native row-selection capability. A missing capability is a refusal, never permission to use HID. Dragging and inaccessible canvases are outside scope.
 
+File-name fields identified by native `AXFilename` are item labels: they are named from that attribute and offer only native row selection. The executor rejects editing requests for them as well. Editing also requires a genuine `AXWindow` surface; Finder's detached rename editor, parented directly to the app, cannot become a document editor simply by appearing in `AXWindows`. This does not classify every text field inside a row as a label; ordinary editable table cells retain field editing.
+
 App-local field focus and selection remain necessary for editing. Keyboard events are addressed to the process and restricted to the existing editing operations. Opening popup/menu buttons is withheld because AppKit can activate the app to show the menu. Already-open menus remain observable. Menu-bar commands are offered only when the target is already active; it is never activated to obtain them.
 
 Native actions can themselves affect focus. Endpoint `took_focus` facts are diagnostic samples, not a continuous guarantee. Acceptance observes macOS activation events independently over the entire task, and reads the resulting application state independently of `DONE`. A transient focus steal fails, even if focus returns before the action reply. A focus fact already returned by input must survive a failed post-action observation.
