@@ -61,6 +61,7 @@ def decide(request):
         and operation not in {"DONE", "BLOCKED"},
     }
     action = decision.get("action") or {}
+    answer["secure"] = bool(action.get("secure"))
     if action.get("path"):
         # The index is the address on this executor, and the table was built
         # from the caller's own text, so this is the number it printed.

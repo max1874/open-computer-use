@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from open_computer_use.cua import parse
 from open_computer_use.desktop import Bridge, UnknownOutcome
-from open_computer_use.model import choose
+from open_computer_use.model import choose, action_space
 
 
 class TreeContracts(unittest.TestCase):
@@ -63,6 +63,15 @@ class DecisionContracts(unittest.TestCase):
             with self.subTest(start=start), self.assertRaises(ValueError):
                 self.decide({"operation": "SELECT_TEXT", "select_text_target": "1",
                              "selection_start": start, "selection_length": 1})
+
+    def test_window_context_is_only_added_when_it_distinguishes_targets(self):
+        self.page["windows"] = [{"title": "Document"}]
+        self.page["elements"][0]["window"] = "Document"
+        elements, _, _ = action_space(self.page, pointer=True)
+        self.assertNotIn("window", elements[0])
+        self.page["windows"].append({"title": "Other"})
+        elements, _, _ = action_space(self.page, pointer=True)
+        self.assertEqual(elements[0]["window"], "Document")
 
 
 class TransportContracts(unittest.TestCase):

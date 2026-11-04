@@ -362,8 +362,7 @@ class Desktop:
         self.instance = None
         self.menus = menus
         self.limit = limit
-        if activate:
-            self.bridge.call("activate", app=app)
+        self.activation = self.bridge.call("activate", app=app) if activate else {}
 
     def observe(self):
         page = self.bridge.call("snapshot", app=self.app, menus=self.menus, limit=self.limit,

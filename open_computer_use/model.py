@@ -229,7 +229,7 @@ def action_space(page, pixels=False, refused=(), pointer=False):
             shown["label"] = source["label"]
         if source.get("secure"):
             shown["secure"] = True
-        if source.get("window"):
+        if len(page.get("windows", [])) > 1 and source.get("window"):
             shown["window"] = source["window"]
         if source.get("identity_proven") is False:
             shown["identity_proven"] = False
@@ -712,8 +712,7 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
     operations = questions_for(targets, controls)
     state = {
         "goal": goal,
-        "window": {"app": page["app"], "title": page["window"], "visible_text": page["text"],
-                   "complete": page.get("complete", True), "truncations": page.get("truncations", [])},
+        "window": {"app": page["app"], "title": page["window"], "visible_text": page["text"]},
         "elements": elements,
         "menu_commands": [{"index": i["index"], "command": i["label"]} for i in page.get("menus", [])],
         # `outcome` only rides along when there is one, which is when the step
@@ -728,6 +727,8 @@ def choose(page, goal, history, capture=None, pointer=False, refused=()):
     # model looking complete — the one kind of wrong table that cannot be
     # noticed from the inside. Said conditionally, so a window that fits pays
     # nothing for the warning.
+    if page.get("complete") is False:
+        state["window"].update(complete=False, truncations=page.get("truncations", []))
     if page.get("truncated"):
         state["table_is_incomplete"] = (
             f"This window has more elements than the {len(elements)} listed; the rest were cut off. "

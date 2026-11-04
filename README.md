@@ -53,7 +53,22 @@ accessibility tree → │ operation                    │
 ```
 
 Operations: `PRESS`, `TYPE_TEXT`, `SELECT`, `MENU`, `CLICK`, `SCROLL_UP`,
-`SCROLL_DOWN`, `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
+`SCROLL_DOWN`, `PASTE_TEXT`, `SELECT_TEXT`, `KEY_CHORD`, `DRAG`,
+`PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
+
+Snapshots include the app's accessible windows and open menus. Each indexed
+field belongs to one window. `SELECT_TEXT` uses UTF-16 offsets; `PASTE_TEXT`
+inserts at its selection; `TYPE_TEXT` replaces the whole value. Editing commands
+are limited to an explicit whitelist. Select All uses the native selection API
+when available; other keyboard commands depend on the application's bindings.
+Unicode insertion uses native selected-text writes, then a temporary pasteboard
+fallback that restores the clipboard unless another app has changed it.
+
+`DRAG` chooses source and destination from the observed table. Sparse windows
+also offer `DRAG_POINT`, bound to the screenshot's window identity, size and
+coordinate scale. Both use the real pointer and require `activate=True`, the
+app in front and an uncovered path. They report delivery; the caller must read
+the application back to establish that the drag achieved its goal.
 
 `CLICK` is addressed to an element out of the same table as `PRESS`. When its
 nearest row exposes native selection, it selects that row without taking focus
@@ -71,12 +86,13 @@ say".
 ### What is not offered
 
 `AXShowMenu` opens an element's context menu — the one a right-click opens —
-and it works. It is still not offered, for two reasons found by running it.
+and it works. It remains unoffered because opening it takes focus.
 macOS activates an app to show a menu, so the operation that needs no pointer
 takes the screen instead; Finder went from `active: False` to `active: True`
-across a single call. And the menu it opens is a separate window that a
-snapshot of the focused window cannot see, so there is no way to report whether
-it worked, or to choose anything in it afterwards.
+across a single call. Open menus are now observable, but this focus-taking
+context-menu operation remains outside the background-first action space.
+An ordinary popup `PRESS` can be followed by an observed menu-item `PRESS`
+or `SELECT`.
 
 `AXScrollToVisible` is published by almost every node in a web view and is
 useless here for the opposite reason: offscreen elements never reach the table
@@ -253,8 +269,9 @@ active.
 
 The accessibility bridge in this repository is one way to reach a Mac app.
 Codex Computer Use is another, and it is better at the part this one is worst
-at: it drives an app without raising it, and it does drag, paste, key
-combinations and text selection, none of which are here.
+at: it exposes the host's desktop interaction API. The standalone bridge now also
+supports drag, paste, editing commands and text selection, with its own delivery
+and observation guards.
 
 It cannot be called from outside its host. There is no package to install —
 `@oai/sky` lives inside Codex's own JavaScript runtime, where a global already
@@ -297,7 +314,10 @@ What is verified: the parser and the decision layer, against real Computer Use
 snapshots of Calculator, Calendar and NetEase Music, and the whole loop against
 a stand-in for `sky` serving one of them — four steps, real decisions, correct
 dispatch, refusal suppression. What is not: any of it against Computer Use
-itself, which needs a Codex that can run it.
+itself, which needs a compatible host executor. Secure inputs are redacted from
+returned history, and an executor error stops the loop unless it explicitly
+proves that no input was delivered. These host-loop changes have contract-level
+coverage; this task's native runtime acceptance uses the Swift bridge.
 
 ## Why it moves
 
@@ -308,10 +328,11 @@ itself, which needs a Codex that can run it.
   sensitivity, and a coordinate the model has to be right about.
 - **One long-lived bridge.** The Swift helper stays up for the session, so a
   step costs one traversal, not a process launch.
-- **Act by path, guarded.** Every executed target came from an observed
-  element, and the element at that path must still mention what was chosen —
-  otherwise the operation is refused, not guessed. Trees shift between
-  observing and acting.
+- **Act from an observation, guarded.** A target must be unique when observed
+  and unique in a fresh census of the same native window. Reordering can change
+  its path without changing its identity. Ambiguity, incomplete identity reads
+  and process replacement refuse delivery. Process identity includes PID and
+  start time. A machine-wide lease prevents simultaneous bridge dispatch.
 - **Erase, set the value, read it back.** `TYPE_TEXT` means "replace the whole
   value", and writing the value is not a replace everywhere: a rich text
   composer treats it as an insert and keeps what was there. So the old contents
@@ -606,30 +627,24 @@ Known limits:
   and the model were identical; only the width changed. See `Desktop.capture`.
   Since the depth fix the fallback fires far less often than it was built to,
   which means it still gets far less exercise than the tree path.
-- One window at a time: the focused window of one app. No sheets belonging to
-  other windows, no multi-app workflows, no drag, no canvas, no web views.
-- Apps that publish a poor accessibility tree cannot be driven well. Before
-  concluding that an app is one of them, check that the walk is reaching its
-  content: that mistake is the subject of "When the window says nothing" above.
-- **`SELECT` is implemented and has never been offered.** It enumerates a
-  pop-up button's options from its accessibility children, and a target set
-  that comes out empty removes the operation from that element. Every pop-up
-  and menu button open on this machine was counted once: **40 of them across
-  Finder, Music, OrbStack, ChatGPT and Chrome, and 0 exposed a single menu
-  item.** Seven had children at all, and those children were the button's own
-  face — `AXImage`, `AXStaticText` — never an `AXMenuItem`. So the operation
-  has no targets anywhere, and `PRESS` is what gets offered on those elements
-  instead. All 40 advertise `AXShowMenu`, and pressing does open the menu; what
-  is missing is reading it afterwards, because an open menu is its own window
-  and the snapshot reads the focused one. That is the same gap that keeps
-  `AXShowMenu` out of the action space, and closing it would revive both.
-  Two things this measurement does not say. It does not say the reader is
-  wrong: it already unwraps the classic AppKit shape, a lone `AXMenu` child
-  whose children are the items. And it does not explain the emptiness, because
-  36 of the 40 were web-view buttons and the other 4 were native toolbar
-  `AXMenuButton`s — not one classic `NSPopUpButton` was on screen, so whether
-  one of those would publish its items while closed is untested here. What is
-  measured is the count.
+- **One app per run.** Its accessible windows, sheets and open menus share one
+  observation. Multi-app orchestration remains outside this loop. Windows that
+  publish little are measured individually for pixel fallback; an incomplete
+  identity census never triggers pixels to bypass a failed tree read.
+- **Poor trees remain a constraint.** Publication budgets report omitted
+  descendants separately from an incomplete traversal. Per-node truncation and
+  target-identity flags show what the reader could establish. Permission probes
+  use a fresh process, including after a mid-session grant.
+- **Open menus are now readable.** A native AppKit popup exposed Red, Green and
+  Blue after `PRESS`; `SELECT` read back Green. The earlier sample of 40 closed
+  web-view and toolbar buttons with no menu children remains an observation
+  about those controls, not a claim that no popup can be selected.
+- **Model accuracy still needs measurement.** In a small `deepseek-flash`
+  comparison, the baseline calculator completed 4/4 cases. Extra single-window
+  metadata initially reduced that to 2/4; removing it restored identical full
+  request bodies for the same observation and goal. The next four cases were
+  3/4 correct, with one looping, so this sample does not establish an accuracy
+  improvement. Execution correctness and model task success are separate.
 - The risk rating is a model's judgement, not a policy engine. It is a gate on
   obvious harm, not a guarantee.
 - **An editable field is not always a place to write prose.** A Finder window
@@ -663,10 +678,11 @@ also sends a picture of the whole window, if Screen Recording is granted;
 `pixels=False` keeps a run tree-only. Nothing else in the package calls out.
 
 **Which apps can it drive?**
-The focused window of one app, as far as that window publishes an accessibility
-tree: native apps, and Electron and Chromium windows once the walk goes deep
-enough (Lark: 174 actionable elements). Drag, key combinations, paste, text
-selection and canvases are out of reach.
+One app's accessible windows: native apps, and Electron and Chromium windows
+once the walk goes deep enough (Lark: 174 actionable elements). Indexed text
+editing and dragging are available when the observed element supports them.
+Sparse canvases use screenshot-bound pointer operations with explicit activation
+permission. Arbitrary background mouse delivery remains unsupported.
 
 More, in English and Chinese: [max1874.com/open-computer-use](https://max1874.com/open-computer-use/)
 

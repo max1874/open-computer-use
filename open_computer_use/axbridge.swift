@@ -40,6 +40,7 @@ func secureField(_ element: AXUIElement) -> Bool {
     string(element, kAXSubroleAttribute) == "AXSecureTextField"
         || string(element, kAXRoleAttribute) == "AXSecureTextField"
         || bool(element, "AXProtectedContent") == true
+        || (editableRoles.contains(string(element, kAXRoleAttribute)) && attributeCache?[element]?.unreadSubrole == true)
 }
 
 // Cached only during one observation. Values are fetched after secure metadata.
@@ -47,36 +48,52 @@ let snapshotAttributes = [kAXRoleAttribute, kAXSubroleAttribute, "AXProtectedCon
     kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute, kAXTitleUIElementAttribute,
     kAXPlaceholderValueAttribute, "AXHelp", kAXPositionAttribute, kAXSizeAttribute,
     kAXEnabledAttribute, kAXFocusedAttribute, kAXSelectedAttribute, kAXChildrenAttribute]
-var attributeCache: [AXUIElement: [String: Any]]?
+struct NodeAttributes {
+    var values: [String: Any]
+    let unreadSubrole: Bool
+    let unreadName: Bool
+}
+var attributeCache: [AXUIElement: NodeAttributes]?
 
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     guard axReadFailure == nil else { return nil }
     if attributeCache != nil, attributeCache![element] == nil {
+        // SwiftUI can answer attributes absent from CopyAttributeNames (Calculator's digit labels).
+        let requested = snapshotAttributes
         var result: CFArray?
-        recordRead(AXUIElementCopyMultipleAttributeValues(element, snapshotAttributes as CFArray, [], &result))
+        recordRead(AXUIElementCopyMultipleAttributeValues(element, requested as CFArray, [], &result))
         var values: [String: Any] = [:]
+        var unknown: Set<String> = []
         if let array = result as? [Any] {
-            for (key, value) in zip(snapshotAttributes, array) {
+            for (key, value) in zip(requested, array) {
                 if CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID(),
                     AXValueGetType(value as! AXValue) == .axError {
                     var error = AXError.success
                     AXValueGetValue(value as! AXValue, .axError, &error)
-                    if key != kAXIdentifierAttribute || error != .failure { recordRead(error) }
+                    if error == .failure, [kAXIdentifierAttribute, kAXSubroleAttribute, kAXTitleUIElementAttribute, kAXDescriptionAttribute].contains(key) {
+                        unknown.insert(key)
+                    } else { recordRead(error) }
                 } else {
                     values[key] = value
                 }
             }
         }
-        attributeCache![element] = values
+        let hasTitle = !(values[kAXTitleAttribute] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || subroleNames[values[kAXSubroleAttribute] as? String ?? ""] != nil
+        let hasDescription = !(values[kAXDescriptionAttribute] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        attributeCache![element] = NodeAttributes(values: values,
+            unreadSubrole: unknown.contains(kAXSubroleAttribute),
+            unreadName: !hasTitle && (unknown.contains(kAXDescriptionAttribute)
+                || (unknown.contains(kAXTitleUIElementAttribute) && !hasDescription)))
     }
-    if let value = attributeCache?[element]?[name] { return value as CFTypeRef }
+    if let value = attributeCache?[element]?.values[name] { return value as CFTypeRef }
     if attributeCache != nil, snapshotAttributes.contains(name) { return nil }
     if name == kAXValueAttribute, secureField(element) { return nil }
     guard axReadFailure == nil else { return nil }
     var value: CFTypeRef?
     let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
     recordRead(status)
-    if attributeCache != nil, let value { attributeCache![element]?[name] = value }
+    if attributeCache != nil, let value { attributeCache![element]?.values[name] = value }
     return value
 }
 
@@ -238,12 +255,11 @@ func post(_ event: CGEvent, pid: pid_t) throws {
 
 struct TargetIdentity: Hashable {
     let role: String
-    let subrole: String
     let identifier: String
     let label: String
-    var unnamedID: TargetIdentity { TargetIdentity(role: role, subrole: subrole, identifier: "", label: label) }
+    var unnamedID: TargetIdentity { TargetIdentity(role: role, identifier: "", label: label) }
     func couldMatch(_ other: TargetIdentity) -> Bool {
-        role == other.role && subrole == other.subrole && label == other.label
+        role == other.role && label == other.label
             && (identifier.isEmpty || other.identifier.isEmpty || identifier == other.identifier)
     }
 }
@@ -504,9 +520,9 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     if out.isEmpty, named, clickableContentRoles.contains(role) { out += ["CLICK", "DRAG"] }
     // AXShowMenu is deliberately not offered. It works, but showing a menu
     // requires macOS to activate the app, so the one operation that opens a
-    // context menu without aiming a right-click also takes the screen — and
-    // the menu it opens is a separate window this snapshot does not see, so
-    // there is no way to tell whether it worked. See "What is not offered".
+    // context menu without aiming a right-click also takes the screen.
+    // Open menus are observable, but this focus-taking action stays opt-in.
+    // See "What is not offered".
     return out
 }
 
@@ -564,6 +580,7 @@ struct Snapshot {
     var truncations: [[String: Any]]
     var complete: Bool
     var nodesObserved: Int
+    var unprovenRoles: [AXUIElement: Set<String>]
 }
 
 final class Walker {
@@ -585,6 +602,7 @@ final class Walker {
     var counts: [String: [TargetIdentity: Int]] = [:]
     var incomplete: Set<String> = []
     var unknownIDs: [String: Set<TargetIdentity>] = [:]
+    var unknownNames: [String: Set<String>] = [:]
 
     func truncate(_ path: String, _ reason: String, identity: Bool = false) {
         truncated = true
@@ -613,8 +631,8 @@ final class Walker {
         if name.isEmpty, role == kAXStaticTextRole {
             name = string(element, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let identity = TargetIdentity(role: role, subrole: string(element, kAXSubroleAttribute),
-            identifier: string(element, kAXIdentifierAttribute), label: name)
+        let identity = TargetIdentity(role: role, identifier: string(element, kAXIdentifierAttribute), label: name)
+        if attributeCache?[element]?.unreadName == true { unknownNames[scopePath, default: []].insert(role) }
         counts[scopePath, default: [:]][identity, default: 0] += 1
         if identity.identifier.isEmpty {
             unknownIDs[scopePath, default: []].insert(identity.unnamedID)
@@ -667,7 +685,7 @@ final class Walker {
                             checked: checked,
                             selected: bool(element, kAXSelectedAttribute),
                             frame: rect,
-                            operations: options.isEmpty ? ops : ops,
+                            operations: ops,
                             options: options,
                             describe: describe(element),
                             window: scopeName,
@@ -818,6 +836,7 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
         if let target = walker.targets[item.path],
             let scope = surfaces.first(where: { CFEqual($0.element, target.surface) }) {
             walker.elements[i].identityProven = !walker.incomplete.contains(scope.path)
+                && !walker.unknownNames[scope.path, default: []].contains(target.identity.role)
                 && walker.counts[scope.path]?[target.identity] == 1
                 && (target.identity.identifier.isEmpty || !walker.unknownIDs[scope.path, default: []].contains(target.identity.unnamedID))
         }
@@ -841,7 +860,8 @@ func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: I
         window: title, windowFrame: frame(first.element), elements: walker.elements, menus: menus, text: text,
         fingerprint: digest(material), truncated: walker.truncated, active: active, instance: instance,
         targets: walker.targets, surfaces: windows, truncations: walker.truncations,
-        complete: walker.complete, nodesObserved: walker.seen.count)
+        complete: walker.complete, nodesObserved: walker.seen.count,
+        unprovenRoles: Dictionary(uniqueKeysWithValues: surfaces.map { ($0.element, walker.unknownNames[$0.path, default: []]) }))
 }
 
 func snapshotJSON(_ snap: Snapshot) -> [String: Any] {
@@ -882,6 +902,9 @@ func observedTargets(_ request: [String: Any], app: NSRunningApplication) throws
     var resolved: [String: ObservedTarget] = [:]
     for field in fields {
         let target = old.targets[request[field] as! String]!
+        guard !(live.unprovenRoles[target.surface] ?? []).contains(target.identity.role) else {
+            throw BridgeError(message: "stale: a competing target's name could not be read")
+        }
         let matches = live.targets.values.filter { CFEqual($0.surface, target.surface) && target.identity.couldMatch($0.identity) }
         guard matches.count == 1, let match = matches.first,
             target.identity.identifier.isEmpty || target.identity.identifier == match.identity.identifier else {
@@ -1084,6 +1107,21 @@ func typeText(_ text: String, pid: pid_t) throws {
 
 func focus(_ element: AXUIElement, pid: pid_t) throws {
     if focusedElement(pid).map({ CFEqual($0, element) }) == true { return }
+    // AppKit ignores field focus in a non-main window while reporting success.
+    // Select its native window first, without activating the application.
+    var ancestor = element
+    for _ in 0..<40 {
+        guard let parent = attr(ancestor, kAXParentAttribute) else { break }
+        ancestor = parent as! AXUIElement
+        if string(ancestor, kAXRoleAttribute) == kAXWindowRole {
+            if bool(ancestor, kAXMainAttribute) != true, settable(ancestor, kAXMainAttribute) {
+                let result = try setAttribute(ancestor, kAXMainAttribute, kCFBooleanTrue)
+                guard result == .success else { throw mutationError(result, "window focus failed: \(describe(result))") }
+            }
+            break
+        }
+    }
+    try requireReadable()
     let result = try setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
     guard result == .success else { throw mutationError(result, "field focus failed: \(describe(result))") }
     guard focusedElement(pid).map({ CFEqual($0, element) }) == true else {
@@ -1096,6 +1134,17 @@ func textRange(_ element: AXUIElement) -> CFRange? {
         AXValueGetType(raw as! AXValue) == .cfRange else { return nil }
     var range = CFRange()
     return AXValueGetValue(raw as! AXValue, .cfRange, &range) ? range : nil
+}
+
+func selectText(_ element: AXUIElement, start: Int, length: Int, pid: pid_t) throws -> [String: Any] {
+    try focus(element, pid: pid)
+    var range = CFRange(location: start, length: length)
+    guard let raw = AXValueCreate(.cfRange, &range) else { throw BridgeError(message: "could not prepare selection") }
+    let result = try setAttribute(element, kAXSelectedTextRangeAttribute, raw)
+    guard result == .success else { throw mutationError(result, "selection failed: \(describe(result))") }
+    let after = textRange(element)
+    return ["detail": "text selection delivered", "mechanism": "AXSelectedTextRange",
+            "verified": after?.location == start && after?.length == length]
 }
 
 func pasteText(_ text: String, into element: AXUIElement, pid: pid_t) throws -> String {
@@ -1414,10 +1463,10 @@ func pressMenuPath(_ app: NSRunningApplication, _ path: String) throws -> String
     for title in titles {
         var pool = children(element)
         if pool.count == 1, string(pool[0], kAXRoleAttribute) == kAXMenuRole { pool = children(pool[0]) }
-        guard
-            let next = pool.first(where: { string($0, kAXTitleAttribute).lowercased() == title.lowercased() })
-                ?? pool.first(where: { string($0, kAXTitleAttribute).lowercased().hasPrefix(title.lowercased()) })
-        else { throw BridgeError(message: "no menu item \"\(title)\" under \(describe(element))") }
+        let matches = pool.filter { string($0, kAXTitleAttribute) == title }
+        guard matches.count == 1, let next = matches.first else {
+            throw BridgeError(message: "menu item \(title) is missing or ambiguous")
+        }
         element = next
     }
     guard bool(element, kAXEnabledAttribute) ?? true else {
@@ -1645,6 +1694,11 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     case "KEY_CHORD":
         guard let key = request["key"] as? String else { throw BridgeError(message: "KEY_CHORD needs a key") }
         try focus(element, pid: pid)
+        // Native selection also works when an inactive app has not validated Edit > Select All.
+        if key == "cmd+a", !secure, settable(element, kAXSelectedTextRangeAttribute) {
+            let length = (string(element, kAXValueAttribute) as NSString).length
+            return try selectText(element, start: 0, length: length, pid: pid)
+        }
         try pressKey(key, pid: pid)
         return ["detail": "key delivered to observed field", "mechanism": "CGEvent→pid"]
     case "SELECT_TEXT":
@@ -1652,14 +1706,7 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             start >= 0, length >= 0 else { throw BridgeError(message: "SELECT_TEXT needs a nonnegative UTF-16 range") }
         let value = string(element, kAXValueAttribute) as NSString
         guard start <= value.length, length <= value.length-start else { throw BridgeError(message: "the selection leaves the text") }
-        try focus(element, pid: pid)
-        var range = CFRange(location: start, length: length)
-        guard let raw = AXValueCreate(.cfRange, &range) else { throw BridgeError(message: "could not prepare selection") }
-        let result = try setAttribute(element, kAXSelectedTextRangeAttribute, raw)
-        guard result == .success else { throw mutationError(result, "selection failed: \(describe(result))") }
-        let after = textRange(element)
-        return ["detail": "text selection delivered", "mechanism": "AXSelectedTextRange",
-                "verified": after?.location == start && after?.length == length]
+        return try selectText(element, start: start, length: length, pid: pid)
     case "PASTE_TEXT":
         guard let text = request["text"] as? String else { throw BridgeError(message: "PASTE_TEXT needs text") }
         let before = secure ? "" : string(element, kAXValueAttribute)
@@ -1689,9 +1736,11 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
         guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_TEXT needs text") }
         let wanted = withoutScaffolding(text)
         try requireReadable()
-        let focused = try setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
-        if focused != .success {
-            let failure = mutationError(focused, "field focus failed: \(describe(focused))")
+        var focused = AXError.failure
+        do {
+            try focus(element, pid: pid)
+            focused = .success
+        } catch let failure as BridgeError {
             if failure.delivery == .uncertain { throw failure }
         }
 
@@ -1880,13 +1929,14 @@ func handle(_ request: [String: Any]) -> [String: Any] {
         case "activate":
             guard let name = request["app"] as? String else { throw BridgeError(message: "activate needs app") }
             let app = try runningApp(name)
+            let before = frontmostPID()
             guard app.activate(options: [.activateAllWindows]) else {
                 throw BridgeError(message: "the app refused activation")
             }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
             return [
                 "id": id, "ok": true,
-                "result": ["frontmost": frontmostPID() == app.processIdentifier],
+                "result": focusFacts(before, app).merging(["frontmost": frontmostPID() == app.processIdentifier]) { _, b in b },
             ]
         case "snapshot":
             guard let name = request["app"] as? String else { throw BridgeError(message: "snapshot needs app") }

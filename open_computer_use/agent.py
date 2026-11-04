@@ -141,14 +141,14 @@ class Agent:
             # that is the run taking the screen as surely as any step in it.
             # Summing this over the steps alone reported False for a run that
             # had already brought the window forward to begin with.
-            took_focus=bool(activate),
-            activated_at_start=bool(activate),
+            took_focus=bool(self.desktop.activation.get("took_focus")),
+            activated_at_start=bool(self.desktop.activation.get("frontmost")),
             elapsed_ms=0,
             started_at=None,
         )
 
     def snapshot(self):
-        elements, targets, _ = action_space(self.state["page"])
+        elements, targets, _ = action_space(self.state["page"], pointer=self.pointer)
         return {
             **{k: v for k, v in self.state.items() if k != "page"},
             "decision": public_decision(self.state["decision"]),
@@ -238,7 +238,7 @@ class Agent:
             capture = None
             if state["page"]["sparse"] and not self.pixels:
                 state["note"] = (
-                    "This window publishes almost nothing to the accessibility tree. "
+                    "An observed window publishes almost nothing to the accessibility tree. "
                     "Pass pixels=True to let the model see a picture of it."
                 )
             elif self.pixels and state["page"]["sparse"]:
@@ -259,7 +259,7 @@ class Agent:
                     state["capture_error"] = str(error)
                 if capture and not self.pointer:
                     state["note"] = (
-                        "This window publishes almost nothing to the accessibility tree, so the "
+                        "An observed window publishes almost nothing to the accessibility tree, so the "
                         "model is being shown a picture of it. Clicking a point in that picture "
                         "needs the app in front; pass activate=True to allow it."
                     )
