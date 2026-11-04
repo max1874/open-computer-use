@@ -1435,18 +1435,29 @@ func postClick(
         event.setIntegerValueField(.mouseEventClickState, value: 1)
         return event
     }
+    var held = false
+    defer {
+        // Process replacement must never strand a button already held at HID.
+        if held { events.last!.post(tap: .cghidEventTap) }
+        if let restore, let move = CGEvent(
+            mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: restore, mouseButton: .left) {
+            sleepMs(40)
+            move.post(tap: .cghidEventTap)
+        }
+    }
     try requireReadable()
     for (type, event) in zip(sequence, events) {
         try requireProcess()
+        if type == .leftMouseDown {
+            guard frontmostPID() == app.processIdentifier, frontWindow(at: point)?.id == id else {
+                throw BridgeError(message: "the click target lost foreground ownership")
+            }
+        }
         dispatchStarted = true
         event.post(tap: .cghidEventTap)
+        if type == .leftMouseDown { held = true }
+        if type == .leftMouseUp { held = false }
         sleepMs(type == .mouseMoved ? 30 : 40)
-    }
-    // Put the pointer back where the user left it.
-    if let restore, let move = CGEvent(
-        mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: restore, mouseButton: .left) {
-        sleepMs(40)
-        move.post(tap: .cghidEventTap)
     }
     return [
         "ok": true,
