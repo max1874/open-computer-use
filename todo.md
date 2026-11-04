@@ -12,10 +12,11 @@ supports it. Measured on System Settings behind other windows: both
 `AXRow.AXSelected = true` and `AXOutline.AXSelectedRows = [row]` navigate from
 General to Wi-Fi and Appearance, with no FocusWatch events. Targets without that
 capability are still hidden without pointer permission; native delivery never
-falls back to HID. Finder's measured file-list names are `TYPE_TEXT`, not
-`CLICK`-only; row selection leaves the folder unopened, and an advertised
-`AXOpen` on its filename returned `-25205` while the observed window stayed on
-the containing folder.
+falls back to HID. Finder's file-list names are offered as `CLICK` and select
+their row, but nothing opens the folder from the background: an advertised
+`AXOpen` on the filename returned `-25205`, `cmd+down` posted to Finder's pid
+left the window on the containing folder, and an inactive Finder reports every
+menu item disabled.
 
 The mouse-event experiment did not remove the pixel path's constraint:
 `.leftMouseDown`/`.leftMouseUp` posted to System Settings' pid at each sidebar
