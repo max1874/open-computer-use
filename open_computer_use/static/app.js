@@ -41,7 +41,8 @@ function renderElements(state) {
         return `<div class="row ${hit ? "chosen" : ""}">
           <span class="idx">[${escape(element.index)}]</span>
           <span class="name">${escape(element.label)}
-            <span class="role">${escape(element.role)}</span>
+            <span class="role">${escape(element.role)}${element.window ? ` · ${escape(element.window)}` : ""}</span>
+            ${element.identity_proven === false ? `<span class="role">· target unavailable</span>` : ""}
             ${value ? `<span class="val">· ${escape(value)}</span>` : ""}</span>
           <span class="ops">${element.operations.map((op) => `<span class="op">${escape(op)}</span>`).join("")}</span>
         </div>`;

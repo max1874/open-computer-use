@@ -42,13 +42,41 @@ func secureField(_ element: AXUIElement) -> Bool {
         || bool(element, "AXProtectedContent") == true
 }
 
+// Cached only during one observation. Values are fetched after secure metadata.
+let snapshotAttributes = [kAXRoleAttribute, kAXSubroleAttribute, "AXProtectedContent",
+    kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute, kAXTitleUIElementAttribute,
+    kAXPlaceholderValueAttribute, "AXHelp", kAXPositionAttribute, kAXSizeAttribute,
+    kAXEnabledAttribute, kAXFocusedAttribute, kAXSelectedAttribute, kAXChildrenAttribute]
+var attributeCache: [AXUIElement: [String: Any]]?
+
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     guard axReadFailure == nil else { return nil }
-    // Redact before any value can enter labels, fingerprints, diagnostics or JSON.
+    if attributeCache != nil, attributeCache![element] == nil {
+        var result: CFArray?
+        recordRead(AXUIElementCopyMultipleAttributeValues(element, snapshotAttributes as CFArray, [], &result))
+        var values: [String: Any] = [:]
+        if let array = result as? [Any] {
+            for (key, value) in zip(snapshotAttributes, array) {
+                if CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID(),
+                    AXValueGetType(value as! AXValue) == .axError {
+                    var error = AXError.success
+                    AXValueGetValue(value as! AXValue, .axError, &error)
+                    if key != kAXIdentifierAttribute || error != .failure { recordRead(error) }
+                } else {
+                    values[key] = value
+                }
+            }
+        }
+        attributeCache![element] = values
+    }
+    if let value = attributeCache?[element]?[name] { return value as CFTypeRef }
+    if attributeCache != nil, snapshotAttributes.contains(name) { return nil }
     if name == kAXValueAttribute, secureField(element) { return nil }
     guard axReadFailure == nil else { return nil }
     var value: CFTypeRef?
-    recordRead(AXUIElementCopyAttributeValue(element, name as CFString, &value))
+    let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+    recordRead(status)
+    if attributeCache != nil, let value { attributeCache![element]?[name] = value }
     return value
 }
 
@@ -164,17 +192,75 @@ func mutationError(_ result: AXError, _ message: String) -> BridgeError {
 
 func perform(_ element: AXUIElement, _ action: String) throws {
     try requireReadable()
+    try requireProcess()
+    dispatchStarted = true
     AXUIElementSetMessagingTimeout(element, axWriteTimeout)
     defer { AXUIElementSetMessagingTimeout(element, 0) }
     let result = AXUIElementPerformAction(element, action as CFString)
     if result != .success { throw mutationError(result, "\(action) failed: \(describe(result))") }
 }
 
-func setAttribute(_ element: AXUIElement, _ name: String, _ value: CFTypeRef) -> AXError {
+func setAttribute(_ element: AXUIElement, _ name: String, _ value: CFTypeRef) throws -> AXError {
+    try requireReadable()
+    try requireProcess()
+    dispatchStarted = true
     AXUIElementSetMessagingTimeout(element, axWriteTimeout)
     defer { AXUIElementSetMessagingTimeout(element, 0) }
     return AXUIElementSetAttributeValue(element, name as CFString, value)
 }
+
+func processInstance(_ pid: pid_t) throws -> String {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_pid == UInt32(pid) else {
+        throw BridgeError(message: "stale: the target process identity is unavailable")
+    }
+    return "\(pid):\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
+}
+
+var dispatchProcess: (pid: pid_t, instance: String)?
+var dispatchStarted = false
+
+func requireProcess() throws {
+    if let target = dispatchProcess {
+        guard (try? processInstance(target.pid)) == target.instance else {
+            throw BridgeError(message: "stale: the target process restarted",
+                              delivery: dispatchStarted ? .uncertain : .notDelivered)
+        }
+    }
+}
+
+func post(_ event: CGEvent, pid: pid_t) throws {
+    try requireProcess()
+    dispatchStarted = true
+    event.postToPid(pid)
+}
+
+struct TargetIdentity: Hashable {
+    let role: String
+    let subrole: String
+    let identifier: String
+    let label: String
+    var unnamedID: TargetIdentity { TargetIdentity(role: role, subrole: subrole, identifier: "", label: label) }
+    func couldMatch(_ other: TargetIdentity) -> Bool {
+        role == other.role && subrole == other.subrole && label == other.label
+            && (identifier.isEmpty || other.identifier.isEmpty || identifier == other.identifier)
+    }
+}
+
+struct ObservedTarget {
+    let element: AXUIElement
+    let surface: AXUIElement
+    let identity: TargetIdentity
+}
+
+struct Observation {
+    let instance: String
+    let targets: [String: ObservedTarget]
+    let proven: Set<String>
+}
+var observations: [String: Observation] = [:]
+var observationOrder: [String] = []
 
 func runningApp(_ query: String) throws -> NSRunningApplication {
     let lower = query.lowercased()
@@ -283,6 +369,10 @@ struct Element {
     var operations: [String]
     var options: [[String: Any]]
     var describe: String
+    var window = ""
+    var identityProven = false
+    var subtreeTruncated = false
+    var selection: [Int]?
 
     var json: [String: Any] {
         var out: [String: Any] = [
@@ -292,13 +382,17 @@ struct Element {
             "label": label,
             "value": value,
             "enabled": enabled,
-            "operations": operations,
+            "operations": identityProven ? operations : [],
+            "identity_proven": identityProven,
+            "window": window,
+            "subtree_truncated": subtreeTruncated,
             "frame": [Int(frame.minX), Int(frame.minY), Int(frame.width), Int(frame.height)],
         ]
         if secure { out["secure"] = true }
         if !subrole.isEmpty { out["subrole"] = subrole }
         if !identifier.isEmpty { out["identifier"] = identifier }
         if focused { out["focused"] = true }
+        if let selection { out["selection"] = selection }
         if let checked { out["checked"] = checked }
         if let selected { out["selected"] = selected }
         if !options.isEmpty { out["options"] = options }
@@ -395,14 +489,19 @@ func operations(for element: AXUIElement, role: String, enabled: Bool, named: Bo
     var out: [String] = []
     let available = Set(actionNames(element))
     if available.contains(kAXPressAction) { out.append("PRESS") }
-    if editableRoles.contains(role), settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
+    if editableRoles.contains(role) {
+        if settable(element, kAXValueAttribute) { out.append("TYPE_TEXT") }
+        if settable(element, kAXFocusedAttribute) { out += ["PASTE_TEXT", "KEY_CHORD"] }
+        if !secureField(element), settable(element, kAXSelectedTextRangeAttribute) { out.append("SELECT_TEXT") }
+        if !secureField(element) { out.append("DRAG") }
+    }
     if role == kAXPopUpButtonRole || role == "AXMenuButton" { out.append("SELECT") }
     if available.contains(kAXIncrementAction) { out.append("INCREMENT") }
     if available.contains(kAXDecrementAction) { out.append("DECREMENT") }
     // Only where the accessibility API offers nothing. CLICK is aimed at a
     // rectangle rather than addressed to an element, so it is the weaker way to
     // reach anything that can also be pressed.
-    if out.isEmpty, named, clickableContentRoles.contains(role) { out.append("CLICK") }
+    if out.isEmpty, named, clickableContentRoles.contains(role) { out += ["CLICK", "DRAG"] }
     // AXShowMenu is deliberately not offered. It works, but showing a menu
     // requires macOS to activate the app, so the one operation that opens a
     // context menu without aiming a right-click also takes the screen — and
@@ -441,19 +540,9 @@ func backgroundClickTarget(_ element: AXUIElement) -> (element: AXUIElement, att
 /// Resolve only observed CLICK targets, sharing child reads across their paths.
 /// Large lists can contain over a thousand titles under the same ancestors.
 func backgroundClickIndices(_ snap: Snapshot) -> [String] {
-    let root = AXUIElementCreateApplication(snap.pid)
-    var branches: [String: [AXUIElement]] = [:]
-    return snap.elements.filter { item in
-        guard item.operations.contains("CLICK") else { return false }
-        var node = root, prefix = ""
-        for part in item.path.split(separator: ".") {
-            let pool = branches[prefix] ?? children(node)
-            branches[prefix] = pool
-            guard let index = Int(part), pool.indices.contains(index) else { return false }
-            node = pool[index]
-            prefix += prefix.isEmpty ? String(part) : ".\(part)"
-        }
-        return backgroundClickTarget(node) != nil
+    snap.elements.filter { item in
+        item.identityProven && item.operations.contains("CLICK")
+            && snap.targets[item.path].map { backgroundClickTarget($0.element) != nil } == true
     }.map { $0.index }
 }
 
@@ -469,6 +558,12 @@ struct Snapshot {
     var fingerprint: String
     var truncated: Bool
     var active: Bool
+    var instance: String
+    var targets: [String: ObservedTarget]
+    var surfaces: [[String: Any]]
+    var truncations: [[String: Any]]
+    var complete: Bool
+    var nodesObserved: Int
 }
 
 final class Walker {
@@ -480,6 +575,22 @@ final class Walker {
     var actionable = 0
     var content = 0
     var truncated = false
+    var complete = true
+    var targets: [String: ObservedTarget] = [:]
+    var truncations: [[String: Any]] = []
+    var scope: AXUIElement?
+    var scopeName = ""
+    var scopePath = ""
+    var seen: Set<AXUIElement> = []
+    var counts: [String: [TargetIdentity: Int]] = [:]
+    var incomplete: Set<String> = []
+    var unknownIDs: [String: Set<TargetIdentity>] = [:]
+
+    func truncate(_ path: String, _ reason: String, identity: Bool = false) {
+        truncated = true
+        truncations.append(["path": path, "reason": reason])
+        if identity { complete = false; incomplete.insert(scopePath) }
+    }
 
     init(bounds: CGRect, limit: Int, contentLimit: Int) {
         self.bounds = bounds
@@ -488,11 +599,29 @@ final class Walker {
     }
 
     func walk(_ element: AXUIElement, path: String, depth: Int, maxDepth: Int) {
-        guard depth <= maxDepth, axReadFailure == nil else { return }
+        guard axReadFailure == nil, !seen.contains(element) else { return }
+        if depth > maxDepth || seen.count >= 30000 {
+            truncate(path, depth > maxDepth ? "depth" : "node_budget", identity: true)
+            return
+        }
+        seen.insert(element)
         let secure = secureField(element)
         let role = string(element, kAXRoleAttribute)
         if role == kAXMenuBarRole { return }
         let rect = frame(element)
+        var name = label(of: element, role: role)
+        if name.isEmpty, role == kAXStaticTextRole {
+            name = string(element, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let identity = TargetIdentity(role: role, subrole: string(element, kAXSubroleAttribute),
+            identifier: string(element, kAXIdentifierAttribute), label: name)
+        counts[scopePath, default: [:]][identity, default: 0] += 1
+        if identity.identifier.isEmpty {
+            unknownIDs[scopePath, default: []].insert(identity.unnamedID)
+        } else {
+            counts[scopePath, default: [:]][identity.unnamedID, default: 0] += 1
+        }
+        if let scope { targets[path] = ObservedTarget(element: element, surface: scope, identity: identity) }
         // Offscreen and zero-size elements do not fill the model's context.
         let visible = rect.width > 0 && rect.height > 0 && (depth == 0 || rect.intersects(bounds))
         if visible {
@@ -501,16 +630,6 @@ final class Walker {
                 if !text.isEmpty, texts.count < 400 { texts.append(text) }
             }
             let enabled = bool(element, kAXEnabledAttribute) ?? true
-            var name = label(of: element, role: role)
-            // A static text's name is the text. `label(of:)` reads title,
-            // description, the label element, the placeholder and the help —
-            // none of which a static text sets, so every one of them came back
-            // anonymous and the name test dropped the entire contents of the
-            // window. It is the one role whose value is its label.
-            if name.isEmpty, role == kAXStaticTextRole {
-                name = string(element, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
-                if name.count > 120 { name = String(name.prefix(117)) + "..." }
-            }
             let ops = operations(for: element, role: role, enabled: enabled, named: !name.isEmpty)
             if !ops.isEmpty || (role == kAXTextAreaRole) {
                 // Two budgets, because they compete and one of them is a list.
@@ -519,9 +638,9 @@ final class Walker {
                 // and the controls that actually drive the app fall off the end
                 // of a table that looks full. Whichever runs out, the snapshot
                 // says it was truncated.
-                let clickOnly = ops == ["CLICK"]
+                let clickOnly = Set(ops).isSubset(of: ["CLICK", "DRAG"])
                 if clickOnly ? content >= contentLimit : actionable >= limit {
-                    truncated = true
+                    truncate(path, clickOnly ? "content_budget" : "control_budget")
                 } else {
                     if clickOnly { content += 1 } else { actionable += 1 }
                     let index = String(elements.count + 1)
@@ -550,13 +669,16 @@ final class Walker {
                             frame: rect,
                             operations: options.isEmpty ? ops : ops,
                             options: options,
-                            describe: describe(element)
+                            describe: describe(element),
+                            window: scopeName,
+                            selection: !secure && editableRoles.contains(role)
+                                ? textRange(element).map { [$0.location, $0.length] } : nil
                         ))
                 }
             }
         }
         // A collapsed or offscreen container still hides no children worth reading.
-        guard !secure, visible || depth == 0 || containerRoles.contains(role) else { return }
+        guard !secure else { return }
         for (i, child) in children(element).enumerated() {
             walk(child, path: path.isEmpty ? "\(i)" : "\(path).\(i)", depth: depth + 1, maxDepth: maxDepth)
         }
@@ -641,91 +763,133 @@ func digest(_ text: String) -> String {
 let DEFAULT_MAX_DEPTH = 40
 
 func snapshot(app query: String, windowIndex: Int?, includeMenus: Bool, limit: Int, maxDepth: Int) throws -> Snapshot {
-    if screenLocked() {
-        throw BridgeError(message: "screen is locked — the accessibility tree is empty while it stays locked")
-    }
+    if screenLocked() { throw BridgeError(message: "screen is locked") }
     let app = try runningApp(query)
+    let instance = try processInstance(app.processIdentifier)
+    attributeCache = [:]
+    defer { attributeCache = nil }
     let root = appElement(app)
-    let windows = children(root).filter { string($0, kAXRoleAttribute) == kAXWindowRole }
+    let pool = children(root)
+    var surfaces: [(element: AXUIElement, path: String)] = []
+    func add(_ element: AXUIElement, _ path: String) {
+        guard !surfaces.contains(where: { CFEqual($0.element, element) }) else { return }
+        surfaces.append((element, path))
+    }
+    for (i, element) in pool.enumerated() where string(element, kAXRoleAttribute) == kAXWindowRole {
+        if windowIndex == nil || windowIndex == i { add(element, String(i)) }
+    }
+    if windowIndex == nil {
+        for element in (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+            add(element, "w\(surfaces.count)")
+        }
+        // Open menus can be separate surfaces, including menus outside the focused window.
+        func menus(_ element: AXUIElement, path: String, depth: Int) {
+            guard depth < 8 else { return }
+            let role = string(element, kAXRoleAttribute)
+            if role == kAXMenuRole, frame(element).width > 0 {
+                add(element, path)
+                return
+            }
+            if role == kAXWindowRole { return }
+            for (i, child) in children(element).enumerated() {
+                menus(child, path: "\(path).\(i)", depth: depth + 1)
+            }
+        }
+        menus(root, path: "menu", depth: 0)
+    }
     try requireReadable()
-    guard !windows.isEmpty else {
-        throw BridgeError(message: "\(app.localizedName ?? query) has no accessible window (not drawn yet?)")
+    guard let first = surfaces.first else { throw BridgeError(message: "the app has no accessible surface") }
+    let walker = Walker(bounds: frame(first.element), limit: limit, contentLimit: max(limit, 1200))
+    var windows: [[String: Any]] = []
+    for surface in surfaces {
+        walker.scope = surface.element
+        walker.scopePath = surface.path
+        walker.scopeName = string(surface.element, kAXTitleAttribute)
+        if walker.scopeName.isEmpty { walker.scopeName = string(surface.element, kAXRoleAttribute) }
+        walker.bounds = frame(surface.element)
+        windows.append(["path": surface.path, "title": walker.scopeName,
+                        "frame": [Int(walker.bounds.minX), Int(walker.bounds.minY), Int(walker.bounds.width), Int(walker.bounds.height)]])
+        let textStart = walker.texts.count
+        walker.walk(surface.element, path: surface.path, depth: 0, maxDepth: maxDepth)
+        windows[windows.count-1]["text"] = walker.texts.dropFirst(textStart).joined(separator: "\n")
     }
-    let allChildren = children(root)
-    let window: AXUIElement
-    let windowPath: String
-    if let windowIndex {
-        guard windowIndex < allChildren.count else {
-            throw BridgeError(message: "app has \(allChildren.count) top-level children")
+    for i in walker.elements.indices {
+        let item = walker.elements[i]
+        if let target = walker.targets[item.path],
+            let scope = surfaces.first(where: { CFEqual($0.element, target.surface) }) {
+            walker.elements[i].identityProven = !walker.incomplete.contains(scope.path)
+                && walker.counts[scope.path]?[target.identity] == 1
+                && (target.identity.identifier.isEmpty || !walker.unknownIDs[scope.path, default: []].contains(target.identity.unnamedID))
         }
-        window = allChildren[windowIndex]
-        windowPath = "\(windowIndex)"
-    } else {
-        // The focused window, falling back to the first one the app exposes.
-        let focused = (attr(root, kAXFocusedWindowAttribute)).map { $0 as! AXUIElement }
-        let chosen = focused ?? windows[0]
-        guard let position = allChildren.firstIndex(where: { CFEqual($0, chosen) }) else {
-            throw BridgeError(message: "the focused window is not among the app's children")
+        walker.elements[i].subtreeTruncated = walker.truncations.contains {
+            let cut = $0["path"] as? String ?? ""
+            return cut == item.path || cut.hasPrefix(item.path + ".")
         }
-        window = chosen
-        windowPath = "\(position)"
     }
-    let bounds = frame(window)
-    // Content elements are capped well above the table the model is shown: the
-    // reader's job is to see the list, and choosing which rows are worth
-    // offering needs the goal, which lives in the decision layer.
-    let walker = Walker(bounds: bounds, limit: limit, contentLimit: max(limit, 1200))
-    walker.walk(window, path: windowPath, depth: 0, maxDepth: maxDepth)
-    // An inactive app reports every menu item as disabled, so offering menu
-    // commands then would offer operations that cannot run.
     let active = frontmostPID() == app.processIdentifier
     let menus = includeMenus && active ? menuItems(app, limit: 200) : []
-    let windowTitle = string(window, kAXTitleAttribute)
     try requireReadable()
-    var text = walker.texts.joined(separator: "\n")
-    if text.count > 6000 { text = String(text.prefix(6000)) + "…" }
-
-    // Semantic fingerprint: what the model was shown, not how many mutations
-    // the app made. Geometry is deliberately excluded — a window that merely
-    // moved has not changed state.
-    let material =
-        windowTitle + "\u{1}"
-        + walker.elements.map {
-            "\($0.role)|\($0.label)|\($0.value)|\($0.enabled)|\($0.checked.map(String.init) ?? "")|\($0.selected.map(String.init) ?? "")"
-        }.joined(separator: "\u{2}") + "\u{1}" + text
-    return Snapshot(
-        app: app.localizedName ?? query,
-        pid: app.processIdentifier,
-        bundle: app.bundleIdentifier ?? "",
-        window: windowTitle,
-        windowFrame: bounds,
-        elements: walker.elements,
-        menus: menus,
-        text: text,
-        fingerprint: digest(material),
-        truncated: walker.truncated,
-        active: active
-    )
+    guard try processInstance(app.processIdentifier) == instance else {
+        throw BridgeError(message: "stale: the app restarted during observation")
+    }
+    let text = String(walker.texts.joined(separator: "\n").prefix(6000))
+    let title = surfaces.map { string($0.element, kAXTitleAttribute) }.joined(separator: " | ")
+    let material = instance + title + walker.elements.map {
+        "\($0.role)|\($0.label)|\($0.value)|\($0.selection ?? [])|\($0.enabled)|\($0.checked.map(String.init) ?? "")|\($0.selected.map(String.init) ?? "")"
+    }.joined(separator: "\u{2}") + text
+    return Snapshot(app: app.localizedName ?? query, pid: app.processIdentifier, bundle: app.bundleIdentifier ?? "",
+        window: title, windowFrame: frame(first.element), elements: walker.elements, menus: menus, text: text,
+        fingerprint: digest(material), truncated: walker.truncated, active: active, instance: instance,
+        targets: walker.targets, surfaces: windows, truncations: walker.truncations,
+        complete: walker.complete, nodesObserved: walker.seen.count)
 }
 
 func snapshotJSON(_ snap: Snapshot) -> [String: Any] {
-    [
-        "app": snap.app,
-        "pid": Int(snap.pid),
-        "bundle": snap.bundle,
-        "window": snap.window,
-        "window_frame": [
-            Int(snap.windowFrame.minX), Int(snap.windowFrame.minY),
-            Int(snap.windowFrame.width), Int(snap.windowFrame.height),
-        ],
-        "elements": snap.elements.map { $0.json },
-        "background_clicks": backgroundClickIndices(snap),
-        "menus": snap.menus,
-        "active": snap.active,
-        "text": snap.text,
-        "fingerprint": snap.fingerprint,
-        "truncated": snap.truncated,
+    let token = UUID().uuidString
+    let published = Set(snap.elements.map { $0.path } + snap.surfaces.compactMap { $0["path"] as? String })
+    observations[token] = Observation(instance: snap.instance, targets: snap.targets.filter { published.contains($0.key) },
+        proven: Set(snap.elements.filter { $0.identityProven }.map { $0.path }))
+    observationOrder.append(token)
+    if observationOrder.count > 16 { observations.removeValue(forKey: observationOrder.removeFirst()) }
+    return [
+        "app": snap.app, "pid": Int(snap.pid), "bundle": snap.bundle, "window": snap.window,
+        "process_instance": snap.instance, "observation": token, "windows": snap.surfaces,
+        "window_frame": [Int(snap.windowFrame.minX), Int(snap.windowFrame.minY), Int(snap.windowFrame.width), Int(snap.windowFrame.height)],
+        "elements": snap.elements.map { $0.json }, "background_clicks": backgroundClickIndices(snap),
+        "menus": snap.menus, "active": snap.active, "text": snap.text, "fingerprint": snap.fingerprint,
+        "truncated": snap.truncated, "complete": snap.complete, "nodes_observed": snap.nodesObserved,
+        "truncations": snap.truncations,
     ]
+}
+
+func observedTargets(_ request: [String: Any], app: NSRunningApplication) throws -> [String: ObservedTarget] {
+    guard let token = request["observation"] as? String, let old = observations[token],
+        request["path"] is String else {
+        throw BridgeError(message: "stale: an observed element reference is required")
+    }
+    guard try processInstance(app.processIdentifier) == old.instance else {
+        throw BridgeError(message: "stale: the observed process restarted")
+    }
+    let fields = request["destination_path"] == nil ? ["path"] : ["path", "destination_path"]
+    for field in fields {
+        guard let path = request[field] as? String, old.proven.contains(path) else {
+            throw BridgeError(message: "stale: the target was not proven unique in its observation")
+        }
+    }
+    let live = try snapshot(app: String(app.processIdentifier), windowIndex: nil, includeMenus: false,
+                            limit: 250, maxDepth: DEFAULT_MAX_DEPTH)
+    guard live.complete else { throw BridgeError(message: "stale: the identity census is incomplete") }
+    var resolved: [String: ObservedTarget] = [:]
+    for field in fields {
+        let target = old.targets[request[field] as! String]!
+        let matches = live.targets.values.filter { CFEqual($0.surface, target.surface) && target.identity.couldMatch($0.identity) }
+        guard matches.count == 1, let match = matches.first,
+            target.identity.identifier.isEmpty || target.identity.identifier == match.identity.identifier else {
+            throw BridgeError(message: "stale: the target is missing or ambiguous")
+        }
+        resolved[field] = match
+    }
+    return resolved
 }
 
 // MARK: - Execution
@@ -765,7 +929,7 @@ func scroll(_ element: AXUIElement, pid: pid_t, amount: Int) throws {
     else { throw BridgeError(message: "could not build a scroll event") }
     event.location = CGPoint(x: rect.midX, y: rect.midY)
     try requireReadable()
-    event.postToPid(pid)
+    try post(event, pid: pid)
 }
 
 /// Find the scroll area covering the largest part of the window.
@@ -813,9 +977,9 @@ func pressKey(_ combo: String, pid: pid_t) throws {
     down.flags = flags
     up.flags = flags
     try requireReadable()
-    down.postToPid(pid)
+    try post(down, pid: pid)
     sleepMs(20)
-    up.postToPid(pid)
+    try post(up, pid: pid)
 }
 
 /// Every character the current keyboard layout can produce, mapped back to the
@@ -884,7 +1048,7 @@ let keyboardLayout: [Character: (code: CGKeyCode, flags: CGEventFlags)] = {
 /// layout is read once and cached, so switching input source mid-session is
 /// not picked up either. "Background typing works for what the layout can
 /// produce" is the claim this supports; "typing is solved" is not.
-func typeText(_ text: String, pid: pid_t) {
+func typeText(_ text: String, pid: pid_t) throws {
     for character in text {
         if let key = keyboardLayout[character] {
             // Nothing else is attached to the event: this is the shape that is
@@ -895,9 +1059,9 @@ func typeText(_ text: String, pid: pid_t) {
             else { continue }
             down.flags = key.flags
             up.flags = key.flags
-            down.postToPid(pid)
+            try post(down, pid: pid)
             sleepMs(4)
-            up.postToPid(pid)
+            try post(up, pid: pid)
         } else {
             // Emoji, CJK, anything this layout has no key for. A native field
             // takes it; web content may not, and there is no other way to send
@@ -908,20 +1072,133 @@ func typeText(_ text: String, pid: pid_t) {
             else { continue }
             down.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
             up.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
-            down.postToPid(pid)
+            try post(down, pid: pid)
             sleepMs(4)
-            up.postToPid(pid)
+            try post(up, pid: pid)
         }
         sleepMs(4)
     }
 }
 
+// MARK: - Text editing
+
+func focus(_ element: AXUIElement, pid: pid_t) throws {
+    if focusedElement(pid).map({ CFEqual($0, element) }) == true { return }
+    let result = try setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+    guard result == .success else { throw mutationError(result, "field focus failed: \(describe(result))") }
+    guard focusedElement(pid).map({ CFEqual($0, element) }) == true else {
+        throw BridgeError(message: "the app did not focus the observed field", delivery: .deliveredUnverified)
+    }
+}
+
+func textRange(_ element: AXUIElement) -> CFRange? {
+    guard let raw = attr(element, kAXSelectedTextRangeAttribute), CFGetTypeID(raw) == AXValueGetTypeID(),
+        AXValueGetType(raw as! AXValue) == .cfRange else { return nil }
+    var range = CFRange()
+    return AXValueGetValue(raw as! AXValue, .cfRange, &range) ? range : nil
+}
+
+func pasteText(_ text: String, into element: AXUIElement, pid: pid_t) throws -> String {
+    try focus(element, pid: pid)
+    if settable(element, kAXSelectedTextAttribute) {
+        let result = try setAttribute(element, kAXSelectedTextAttribute, text as CFString)
+        guard result == .success else { throw mutationError(result, "text insertion failed: \(describe(result))") }
+        return "AXSelectedText"
+    }
+    let pasteboard = NSPasteboard.general
+    let saved = (pasteboard.pasteboardItems ?? []).map { item in
+        item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+    }
+    pasteboard.clearContents()
+    let prepared = pasteboard.setString(text, forType: .string)
+    let revision = pasteboard.changeCount
+    defer {
+        // Another application may copy while the paste is in flight.
+        if pasteboard.changeCount == revision {
+            pasteboard.clearContents()
+            let items = saved.map { values -> NSPasteboardItem in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
+    }
+    guard prepared else { throw BridgeError(message: "could not prepare paste text") }
+    try pressKey("cmd+v", pid: pid)
+    sleepMs(180)
+    return "pasteboard→CGEvent→pid"
+}
+
+func surfaceWindow(_ app: NSRunningApplication, _ surface: AXUIElement) throws -> (id: CGWindowID, rect: CGRect) {
+    let rect = frame(surface)
+    let matches = onScreenWindows().filter { window in
+        guard (window[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier,
+            let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
+        return abs((bounds["X"] ?? 0)-rect.minX) < 1 && abs((bounds["Y"] ?? 0)-rect.minY) < 1
+            && abs((bounds["Width"] ?? 0)-rect.width) < 1 && abs((bounds["Height"] ?? 0)-rect.height) < 1
+    }
+    guard matches.count == 1, let id = matches[0][kCGWindowNumber as String] as? Int else {
+        throw BridgeError(message: "the observed surface cannot be mapped to one on-screen window")
+    }
+    return (CGWindowID(id), rect)
+}
+
+func drag(_ app: NSRunningApplication, from start: CGPoint, to end: CGPoint,
+          sourceWindow: CGWindowID, destinationWindow: CGWindowID) throws -> [String: Any] {
+    guard frontmostPID() == app.processIdentifier else {
+        throw BridgeError(message: "a pointer drag requires the app in front")
+    }
+    guard frontWindow(at: start)?.id == sourceWindow, frontWindow(at: end)?.id == destinationWindow else {
+        throw BridgeError(message: "a drag endpoint is covered by another window")
+    }
+    let points = (0...16).map { i in
+        CGPoint(x: start.x + (end.x-start.x) * Double(i)/16,
+                y: start.y + (end.y-start.y) * Double(i)/16)
+    }
+    for (i, point) in points.enumerated() {
+        let owner = frontWindow(at: point)
+        guard owner?.pid == app.processIdentifier || (owner == nil && i > 0 && i < 16) else {
+            throw BridgeError(message: "the drag path is covered by another app or leaves the observed windows")
+        }
+    }
+    let restore = CGEvent(source: nil)?.location
+    let types: [CGEventType] = [.leftMouseDown] + Array(repeating: .leftMouseDragged, count: 16) + [.leftMouseUp]
+    let locations = [start] + Array(points.dropFirst()) + [end]
+    let events = try zip(types, locations).map { type, point -> CGEvent in
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
+            throw BridgeError(message: "could not prepare drag events")
+        }
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        return event
+    }
+    var held = false
+    // Always release a held button if process validation fails midway.
+    defer {
+        if held { events.last!.post(tap: .cghidEventTap) }
+        if let restore, let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                           mouseCursorPosition: restore, mouseButton: .left) {
+            move.post(tap: .cghidEventTap)
+        }
+    }
+    for (type, event) in zip(types, events) {
+        try requireProcess()
+        dispatchStarted = true
+        event.post(tap: .cghidEventTap)
+        if type == .leftMouseDown { held = true }
+        if type == .leftMouseUp { held = false }
+        sleepMs(25)
+    }
+    return ["detail": "drag delivered", "mechanism": "HID (real pointer)", "verified": false]
+}
+
 // MARK: - Pixels, for apps that publish nothing
 
 /// The on-screen window of an app, in global points, with its CGWindow id.
-func windowRect(_ app: NSRunningApplication) throws -> (id: CGWindowID, rect: CGRect) {
+func windowRect(_ app: NSRunningApplication, id expected: CGWindowID? = nil) throws -> (id: CGWindowID, rect: CGRect) {
     for window in onScreenWindows() where (window[kCGWindowLayer as String] as? Int) == 0 {
         guard (window[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier else { continue }
+        if let expected, (window[kCGWindowNumber as String] as? Int) != Int(expected) { continue }
         let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
         let rect = CGRect(
             x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
@@ -936,14 +1213,14 @@ func windowRect(_ app: NSRunningApplication) throws -> (id: CGWindowID, rect: CG
 ///
 /// The model is shown a picture whose coordinate space is the window's own, so
 /// a point it names converts back to the screen by one offset and one scale.
-func capture(_ app: NSRunningApplication, width: Int, quality: Double) throws -> [String: Any] {
-    guard CGPreflightScreenCaptureAccess() else {
+func capture(_ app: NSRunningApplication, width: Int, quality: Double, windowID: CGWindowID? = nil) throws -> [String: Any] {
+    guard try freshPermissions()["screen_recording"] as? Bool == true else {
         throw BridgeError(
             message: "Screen Recording permission is missing, so a capture would be blank. "
                 + "System Settings > Privacy & Security > Screen Recording: enable the app running this "
                 + "shell, then restart it.")
     }
-    let (id, rect) = try windowRect(app)
+    let (id, rect) = try windowRect(app, id: windowID)
     let file = FileManager.default.temporaryDirectory
         .appendingPathComponent("open-computer-use-\(UUID().uuidString).png")
     defer { try? FileManager.default.removeItem(at: file) }
@@ -1053,7 +1330,7 @@ func clickImagePoint(
             message: "refused: a real click goes wherever the pointer is, and "
                 + "\(app.localizedName ?? "the app") is not frontmost. Activate it first.")
     }
-    let (id, rect) = try windowRect(app)
+    let (id, rect) = try windowRect(app, id: capturedWindow)
     // The point was named in a picture of one window at one size. If either
     // has changed, the scale that came with the picture no longer maps that
     // point anywhere meaningful — the click would land by coincidence.
@@ -1111,6 +1388,8 @@ func postClick(
     }
     try requireReadable()
     for (type, event) in zip(sequence, events) {
+        try requireProcess()
+        dispatchStarted = true
         event.post(tap: .cghidEventTap)
         sleepMs(type == .mouseMoved ? 30 : 40)
     }
@@ -1167,6 +1446,25 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
     }
     let app = try runningApp(appName)
     let pid = app.processIdentifier
+    let instance = try processInstance(pid)
+    if let expected = request["process_instance"] as? String, expected != instance {
+        throw BridgeError(message: "stale: the observed process restarted")
+    }
+    let lease = open("/private/tmp/open-computer-use-\(getuid()).lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+    guard lease >= 0 else { throw BridgeError(message: "could not open the input lease") }
+    defer { close(lease) }
+    guard flock(lease, LOCK_EX | LOCK_NB) == 0 else { throw BridgeError(message: "another agent is delivering input") }
+    defer { flock(lease, LOCK_UN) }
+    dispatchProcess = (pid, instance)
+    dispatchStarted = false
+    defer { dispatchProcess = nil }
+    let result = try executeAction(request, app: app, op: op)
+    try requireProcess()
+    return result
+}
+
+func executeAction(_ request: [String: Any], app: NSRunningApplication, op: String) throws -> [String: Any] {
+    let pid = app.processIdentifier
     if screenLocked() { throw BridgeError(message: "screen is locked — no operation can reach the app") }
     // Menu titles and enabled states are revalidated by the app itself; any
     // operation can change them ("Make Rich Text" becomes "Make Plain Text").
@@ -1200,11 +1498,27 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
             capturedSize: request["window_size"] as? [Double])
             .merging(focusFacts(focusBefore, app)) { a, _ in a }
     }
+    if op == "DRAG_POINT" {
+        guard let start = request["start"] as? [Double], let end = request["end"] as? [Double],
+            start.count == 2, end.count == 2, let scale = request["scale"] as? Double,
+            let capturedWindow = request["window_id"] as? Int,
+            let size = request["window_size"] as? [Double], size.count == 2,
+            scale.isFinite, scale > 0, (start + end + size).allSatisfy({ $0.isFinite }) else {
+            throw BridgeError(message: "DRAG_POINT requires two finite capture points and its window identity")
+        }
+        let (id, rect) = try windowRect(app, id: CGWindowID(capturedWindow))
+        guard Int(id) == capturedWindow, abs(Double(rect.width)-size[0]) < 1,
+            abs(Double(rect.height)-size[1]) < 1 else { throw BridgeError(message: "stale: the capture window changed") }
+        let a = CGPoint(x: rect.minX+start[0]*scale, y: rect.minY+start[1]*scale)
+        let b = CGPoint(x: rect.minX+end[0]*scale, y: rect.minY+end[1]*scale)
+        guard rect.contains(a), rect.contains(b) else { throw BridgeError(message: "drag points leave the capture") }
+        return try drag(app, from: a, to: b, sourceWindow: id, destinationWindow: id).merging(focusFacts(focusBefore, app)) { a, _ in a }
+    }
     if op == "TYPE_KEYS" {
         // No element to set a value on; the keystrokes go wherever the app's
         // own focus is, which is why this needs a visible confirmation after.
         guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_KEYS needs text") }
-        typeText(text, pid: pid)
+        try typeText(text, pid: pid)
         return ["ok": true, "detail": "typed \(text.count) characters", "mechanism": "CGEvent→pid (blind)"].merging(focusFacts(focusBefore, app)) { a, _ in a }
     }
     if op == "SCROLL_UP" || op == "SCROLL_DOWN" {
@@ -1219,7 +1533,8 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
     }
 
     guard let path = request["path"] as? String else { throw BridgeError(message: "\(op) needs an element path") }
-    let element = try resolve(app, path)
+    let targets = try observedTargets(request, app: app)
+    let element = targets["path"]!.element
     let secure = secureField(element)
     try requireReadable()
     if let expected = request["expect_secure"] as? Bool, expected != secure {
@@ -1255,7 +1570,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         // the placeholder stopped being reported: in Music every TYPE_TEXT
         // aimed at the find field was refused as stale, 79 times in a row, for
         // a field that was exactly where it had always been.
-        let hay = (current + " " + label(of: element, role: string(element, kAXRoleAttribute))).lowercased()
+        let hay = (current + " " + targets["path"]!.identity.label).lowercased()
         let needle = expect.lowercased()
         if !hay.contains(needle) {
             throw BridgeError(message: "stale: \(path) is now \(current), which no longer mentions \"\(expect)\"")
@@ -1290,7 +1605,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
             guard let target = backgroundClickTarget(element) else {
                 throw BridgeError(message: "refused: \(current) has no background click delivery")
             }
-            let result = setAttribute(target.element, target.attribute, target.value)
+            let result = try setAttribute(target.element, target.attribute, target.value)
             guard result == .success else {
                 throw mutationError(result, "background click failed: \(describe(result))")
             }
@@ -1312,7 +1627,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
                 message: "refused: a real click goes wherever the pointer is, and "
                     + "\(app.localizedName ?? "the app") is not frontmost. Activate it first.")
         }
-        let (windowID, windowFrame) = try windowRect(app)
+        let (windowID, windowFrame) = try surfaceWindow(app, targets["path"]!.surface)
         let box = frame(element)
         guard box.width > 0, box.height > 0 else {
             throw BridgeError(message: "\(current) has no size to aim at")
@@ -1327,11 +1642,54 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         let action = op == "INCREMENT" ? kAXIncrementAction : kAXDecrementAction
         try perform(element, action)
         return ["ok": true, "detail": current, "mechanism": action].merging(focusFacts(focusBefore, app)) { a, _ in a }
+    case "KEY_CHORD":
+        guard let key = request["key"] as? String else { throw BridgeError(message: "KEY_CHORD needs a key") }
+        try focus(element, pid: pid)
+        try pressKey(key, pid: pid)
+        return ["detail": "key delivered to observed field", "mechanism": "CGEvent→pid"]
+    case "SELECT_TEXT":
+        guard !secure, let start = request["start"] as? Int, let length = request["length"] as? Int,
+            start >= 0, length >= 0 else { throw BridgeError(message: "SELECT_TEXT needs a nonnegative UTF-16 range") }
+        let value = string(element, kAXValueAttribute) as NSString
+        guard start <= value.length, length <= value.length-start else { throw BridgeError(message: "the selection leaves the text") }
+        try focus(element, pid: pid)
+        var range = CFRange(location: start, length: length)
+        guard let raw = AXValueCreate(.cfRange, &range) else { throw BridgeError(message: "could not prepare selection") }
+        let result = try setAttribute(element, kAXSelectedTextRangeAttribute, raw)
+        guard result == .success else { throw mutationError(result, "selection failed: \(describe(result))") }
+        let after = textRange(element)
+        return ["detail": "text selection delivered", "mechanism": "AXSelectedTextRange",
+                "verified": after?.location == start && after?.length == length]
+    case "PASTE_TEXT":
+        guard let text = request["text"] as? String else { throw BridgeError(message: "PASTE_TEXT needs text") }
+        let before = secure ? "" : string(element, kAXValueAttribute)
+        let range = secure ? nil : textRange(element)
+        var expected: String?
+        if let range, range.location >= 0, range.length >= 0,
+            range.location <= (before as NSString).length, range.length <= (before as NSString).length-range.location {
+            expected = (before as NSString).replacingCharacters(in: NSRange(location: range.location, length: range.length), with: text)
+        }
+        let mechanism = try pasteText(text, into: element, pid: pid)
+        sleepMs(40)
+        let verified = expected.map { $0 == string(element, kAXValueAttribute) } ?? false
+        return ["detail": "text insertion delivered", "mechanism": mechanism, "verified": verified]
+    case "DRAG":
+        guard let destination = targets["destination_path"] else { throw BridgeError(message: "DRAG needs an observed destination") }
+        let sourceRect = frame(element), destinationRect = frame(destination.element)
+        let sourceWindow = try surfaceWindow(app, targets["path"]!.surface)
+        let destinationWindow = try surfaceWindow(app, destination.surface)
+        guard sourceRect.width > 0, sourceRect.height > 0, destinationRect.width > 0, destinationRect.height > 0 else {
+            throw BridgeError(message: "the drag target has no geometry")
+        }
+        return try drag(app, from: CGPoint(x: sourceRect.midX, y: sourceRect.midY),
+                        to: CGPoint(x: destinationRect.midX, y: destinationRect.midY),
+                        sourceWindow: sourceWindow.id, destinationWindow: destinationWindow.id)
+            .merging(focusFacts(focusBefore, app)) { a, _ in a }
     case "TYPE_TEXT":
         guard let text = request["text"] as? String else { throw BridgeError(message: "TYPE_TEXT needs text") }
         let wanted = withoutScaffolding(text)
         try requireReadable()
-        let focused = setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
+        let focused = try setAttribute(element, kAXFocusedAttribute, kCFBooleanTrue)
         if focused != .success {
             let failure = mutationError(focused, "field focus failed: \(describe(focused))")
             if failure.delivery == .uncertain { throw failure }
@@ -1375,7 +1733,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
 
             var mechanism = "AXValue"
             try requireReadable()
-            let result = setAttribute(element, kAXValueAttribute, text as CFTypeRef)
+            let result = try setAttribute(element, kAXValueAttribute, text as CFTypeRef)
             if result != .success {
                 let failure = mutationError(result, "value write failed: \(describe(result))")
                 if failure.delivery == .uncertain { throw failure }
@@ -1386,8 +1744,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
                             + "(\(describe(focused))); typing now would go somewhere unknown")
                 }
                 try requireReadable()
-                typeText(text, pid: pid)
-                mechanism = "CGEvent→pid"
+                mechanism = try pasteText(text, into: element, pid: pid)
             }
             delivered = true
 
@@ -1442,14 +1799,46 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         if pool.count == 1, string(pool[0], kAXRoleAttribute) == kAXMenuRole { pool = children(pool[0]) }
         guard choice >= 0, choice < pool.count else { throw BridgeError(message: "option \(choice) is gone; re-observe") }
         let item = pool[choice]
+        let choiceTitle = string(item, kAXTitleAttribute)
+        guard let expected = request["option_label"] as? String, choiceTitle == expected else {
+            throw BridgeError(message: "stale: the observed menu option changed")
+        }
+        if string(element, kAXValueAttribute) == choiceTitle {
+            return ["detail": "the popup already has this choice", "mechanism": "read-back",
+                    "verified": true, "disposition": Delivery.notDelivered.disposition]
+        }
         try perform(item, kAXPressAction)
-        return ["ok": true, "detail": describe(item), "mechanism": "AXPress(option)"].merging(focusFacts(focusBefore, app)) { a, _ in a }
+        var verified = false
+        for attempt in 0..<17 {
+            verified = !choiceTitle.isEmpty && (string(element, kAXValueAttribute) == choiceTitle
+                || string(element, kAXTitleAttribute) == choiceTitle)
+            if verified || axReadFailure != nil { break }
+            if attempt < 16 { sleepMs(25) }
+        }
+        return ["ok": true, "detail": "popup choice delivered", "mechanism": "AXPress(option)", "verified": verified].merging(focusFacts(focusBefore, app)) { a, _ in a }
     default:
         throw BridgeError(message: "unknown operation \(op)")
     }
 }
 
 // MARK: - RPC
+
+func freshPermissions() throws -> [String: Any] {
+    let child = Process()
+    child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+    child.arguments = ["status"]
+    let pipe = Pipe()
+    child.standardOutput = pipe
+    child.standardError = FileHandle.nullDevice
+    try child.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    child.waitUntilExit()
+    guard child.terminationStatus == 0,
+        let status = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw BridgeError(message: "could not recheck macOS permissions")
+    }
+    return status
+}
 
 func statusJSON() -> [String: Any] {
     let front = frontmostApp()
@@ -1466,10 +1855,18 @@ func handle(_ request: [String: Any]) -> [String: Any] {
     let id = request["id"] as? Int ?? 0
     let method = request["method"] as? String ?? ""
     axReadFailure = nil
+    dispatchStarted = false
     do {
+        if let expected = request["process_instance"] as? String,
+            let query = request["app"] as? String {
+            let app = try runningApp(query)
+            guard try processInstance(app.processIdentifier) == expected else {
+                throw BridgeError(message: "stale: the observed process restarted")
+            }
+        }
         switch method {
         case "status":
-            return ["id": id, "ok": true, "result": statusJSON()]
+            return ["id": id, "ok": true, "result": try freshPermissions()]
         case "apps":
             let front = frontmostPID()
             let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
@@ -1483,8 +1880,10 @@ func handle(_ request: [String: Any]) -> [String: Any] {
         case "activate":
             guard let name = request["app"] as? String else { throw BridgeError(message: "activate needs app") }
             let app = try runningApp(name)
-            app.activate()
-            sleepMs(250)
+            guard app.activate(options: [.activateAllWindows]) else {
+                throw BridgeError(message: "the app refused activation")
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
             return [
                 "id": id, "ok": true,
                 "result": ["frontmost": frontmostPID() == app.processIdentifier],
@@ -1519,17 +1918,25 @@ func handle(_ request: [String: Any]) -> [String: Any] {
         case "capture":
             guard let name = request["app"] as? String else { throw BridgeError(message: "capture needs app") }
             let app = try runningApp(name)
+            var windowID = (request["window_id"] as? Int).map { CGWindowID($0) }
+            if let path = request["surface_path"] as? String {
+                guard let token = request["observation"] as? String, let old = observations[token],
+                    let surface = old.targets[path], try processInstance(app.processIdentifier) == old.instance else {
+                    throw BridgeError(message: "stale: the capture surface expired")
+                }
+                windowID = try surfaceWindow(app, surface.surface).id
+            }
             return [
                 "id": id, "ok": true,
                 "result": try capture(
                     app,
                     width: (request["width"] as? Int) ?? 1000,
-                    quality: (request["quality"] as? Double) ?? 0.6),
+                    quality: (request["quality"] as? Double) ?? 0.6, windowID: windowID),
             ]
         case "act":
             var result = try execute(request)
             let delivery: Delivery = result["verified"] as? Bool == true ? .deliveredVerified : .deliveredUnverified
-            result["disposition"] = delivery.disposition
+            if result["disposition"] == nil { result["disposition"] = delivery.disposition }
             return ["id": id, "ok": true, "result": result]
         case "ping":
             return ["id": id, "ok": true, "result": ["pong": true]]
@@ -1537,8 +1944,10 @@ func handle(_ request: [String: Any]) -> [String: Any] {
             throw BridgeError(message: "unknown method \"\(method)\"")
         }
     } catch let error as BridgeError {
+        let delivery: Delivery = method == "act" && dispatchStarted && error.delivery == .notDelivered
+            ? .deliveredUnverified : error.delivery
         return ["id": id, "ok": false, "error": error.message,
-                "acted": error.delivery != .notDelivered, "disposition": error.delivery.disposition]
+                "acted": delivery != .notDelivered, "disposition": delivery.disposition]
     } catch {
         let delivery: Delivery = method == "act" ? .uncertain : .notDelivered
         return ["id": id, "ok": false, "error": "\(error)", "disposition": delivery.disposition]

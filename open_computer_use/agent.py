@@ -254,7 +254,7 @@ class Agent:
                 }
                 state["sparseness"]["text"] = len(state["page"].get("text") or "")
                 try:
-                    capture = self.desktop.capture()
+                    capture = self.desktop.capture(page=state["page"])
                 except BridgeError as error:
                     state["capture_error"] = str(error)
                 if capture and not self.pointer:
@@ -345,7 +345,7 @@ class Agent:
                     text = decision.get("text")
                     if not text:
                         raise ValueError("TYPE_KEYS came back without text; nothing was typed.")
-                elif operation == "TYPE_TEXT":
+                elif operation in {"TYPE_TEXT", "PASTE_TEXT"}:
                     if not self.desktop.fresh(page):
                         raise StaleWindow("The window changed before the value was settled. Choose again.")
                     text = decision.get("text")
@@ -548,7 +548,7 @@ class Agent:
                 # inside it, so the picture is what says whether the click
                 # landed. A click that changed nothing visible missed.
                 try:
-                    after = self.desktop.capture()
+                    after = self.desktop.capture(window_id=self.capture["window_id"])
                     difference = thumbnail_difference(self.capture.get("thumbnail"), after.get("thumbnail"))
                     if difference is not None:
                         changed = difference >= PIXEL_CHANGE_THRESHOLD
