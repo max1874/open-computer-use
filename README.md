@@ -274,14 +274,15 @@ supports drag, paste, editing commands and text selection, with its own delivery
 and observation guards.
 
 It cannot be called from outside its host. There is no package to install —
-`@oai/sky` lives inside Codex's own JavaScript runtime, where a global already
-exists — so code that wants it has to run in there. That is why
+the desktop API lives inside Codex's JavaScript runtime. Older hosts expose
+`sky`; current hosts expose `cua.getApp`, whose methods can be adapted to the
+same interface below. That is why
 [`runtime/loop.mjs`](runtime/loop.mjs) is JavaScript and nothing else is: it is
 a hundred lines that observe, hand the tree to a decision process, and perform
 what comes back.
 
 ```js
-// in Codex's node_repl, where `sky` is already defined
+// In a host with the legacy `sky` interface:
 const { runTask } = await import("file:///path/to/open-computer-use/runtime/loop.mjs");
 await runTask({
   sky,
@@ -292,6 +293,27 @@ await runTask({
   env: { JEV_API_KEY: "..." },        // or DECISION_API_KEY
 });
 ```
+
+For a `cua.getApp` host, construct `sky` from the app handle:
+
+```js
+const target = await cua.getApp("Calculator");
+const sky = {
+  get_app_state: async () => ({ text: await target.getAXState({ emit: false, disableDiffing: true }) }),
+  click: ({ element_index }) => target.click(element_index),
+  set_value: ({ element_index, value }) => target.setValue(element_index, value),
+  press_key: ({ key }) => target.pressKey(key),
+  scroll: ({ element_index, direction, pages }) => target.scroll(element_index, direction, pages),
+};
+```
+
+Keep the awaited loop inside one active host invocation: native calls made by a
+promise continuing between tool invocations can be rejected by the host. A host
+without a global `process` accepts an explicit `env`; provide normal process
+variables such as `HOME` and `PATH` when its child needs them. Child processes
+still need permission to reach the configured model endpoint. A restricted host
+can use a `python` wrapper that forwards the same JSON-line decision protocol to
+an external process with network access.
 
 The decision layer is unchanged. `cua.py` parses the tree text Computer Use
 prints into the same indexed table `action_space` has always been handed, and
@@ -310,14 +332,15 @@ Two things are genuinely different, and both are the executor's, not ours:
   rectangles is therefore off on this path: the icon/caption merge, the
   sparseness test, and the screenshot fallback they feed.
 
-What is verified: the parser and the decision layer, against real Computer Use
-snapshots of Calculator, Calendar and NetEase Music, and the whole loop against
-a stand-in for `sky` serving one of them — four steps, real decisions, correct
-dispatch, refusal suppression. What is not: any of it against Computer Use
-itself, which needs a compatible host executor. Secure inputs are redacted from
-returned history, and an executor error stops the loop unless it explicitly
-proves that no input was delivered. These host-loop changes have contract-level
-coverage; this task's native runtime acceptance uses the Swift bridge.
+What is verified: parser and decision contracts, plus a real `cua.getApp`
+adapter run that wrote a secure native field. The application's own receipt
+matched the intended input, while the public observation and returned history
+kept the value redacted. An earlier executor error stopped as an unsafe unknown
+outcome without resending. This host restricted child networking, so the live
+run forwarded its actual observation to an external decision process using the
+same Python decision module; it does not establish unrestricted networking from
+inside the host. The standalone Swift bridge has separate native runtime and
+model-driven acceptance for editing, selection and both drag paths.
 
 ## Why it moves
 
