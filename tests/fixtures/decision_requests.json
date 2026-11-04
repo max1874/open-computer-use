@@ -1,0 +1,481 @@
+{
+  "baseline": "0627fd34c4cff3e978c4f1e9d7c3cf38485310b5",
+  "pages": {
+    "before": {
+      "app": "OCU Refactor",
+      "window": "OCU Refactor Acceptance",
+      "text": "Presses: 0 · Clicks: 0 · Drags: 0\nOCU Refactor Acceptance",
+      "windows": [
+        {
+          "frame": [
+            200,
+            778,
+            480,
+            362
+          ],
+          "path": "0",
+          "text": "Presses: 0 · Clicks: 0 · Drags: 0\nOCU Refactor Acceptance",
+          "title": "OCU Refactor Acceptance"
+        }
+      ],
+      "elements": [
+        {
+          "enabled": true,
+          "focused": true,
+          "frame": [
+            219,
+            843,
+            442,
+            28
+          ],
+          "identity_proven": true,
+          "index": "1",
+          "label": "Message",
+          "operations": [
+            "TYPE_TEXT",
+            "PASTE_TEXT",
+            "KEY_CHORD",
+            "SELECT_TEXT",
+            "DRAG"
+          ],
+          "path": "0.0",
+          "role": "AXTextField",
+          "selection": [
+            0,
+            6
+          ],
+          "subtree_truncated": false,
+          "value": "before",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            219,
+            883,
+            442,
+            28
+          ],
+          "identity_proven": true,
+          "index": "2",
+          "label": "Password",
+          "operations": [
+            "TYPE_TEXT",
+            "PASTE_TEXT",
+            "KEY_CHORD"
+          ],
+          "path": "0.1",
+          "role": "AXTextField",
+          "secure": true,
+          "subrole": "AXSecureTextField",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            219,
+            931,
+            182,
+            30
+          ],
+          "identity_proven": true,
+          "index": "3",
+          "label": "Advance",
+          "operations": [
+            "PRESS"
+          ],
+          "path": "0.2",
+          "role": "AXButton",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            221,
+            983,
+            438,
+            28
+          ],
+          "identity_proven": true,
+          "index": "4",
+          "label": "Presses: 0 · Clicks: 0 · Drags: 0",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.3",
+          "role": "AXStaticText",
+          "subtree_truncated": false,
+          "value": "Presses: 0 · Clicks: 0 · Drags: 0",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            240,
+            1040,
+            80,
+            80
+          ],
+          "identity_proven": true,
+          "index": "5",
+          "label": "Blue source",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.4",
+          "role": "AXImage",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            500,
+            1040,
+            80,
+            80
+          ],
+          "identity_proven": true,
+          "index": "6",
+          "label": "Green destination",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.5",
+          "role": "AXImage",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            208,
+            786,
+            16,
+            16
+          ],
+          "identity_proven": true,
+          "index": "7",
+          "label": "Close window",
+          "operations": [
+            "PRESS"
+          ],
+          "path": "0.6",
+          "role": "AXButton",
+          "subrole": "AXCloseButton",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            282,
+            786,
+            173,
+            16
+          ],
+          "identity_proven": true,
+          "index": "8",
+          "label": "OCU Refactor Acceptance",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.9",
+          "role": "AXStaticText",
+          "subtree_truncated": false,
+          "value": "OCU Refactor Acceptance",
+          "window": "OCU Refactor Acceptance"
+        }
+      ],
+      "background_clicks": [],
+      "complete": true,
+      "truncated": false,
+      "truncations": []
+    },
+    "after": {
+      "app": "OCU Refactor",
+      "window": "OCU Refactor Acceptance",
+      "text": "Presses: 0 · Clicks: 0 · Drags: 0\nOCU Refactor Acceptance",
+      "windows": [
+        {
+          "frame": [
+            200,
+            778,
+            480,
+            362
+          ],
+          "path": "0",
+          "text": "Presses: 0 · Clicks: 0 · Drags: 0\nOCU Refactor Acceptance",
+          "title": "OCU Refactor Acceptance"
+        }
+      ],
+      "elements": [
+        {
+          "enabled": true,
+          "focused": true,
+          "frame": [
+            219,
+            843,
+            442,
+            28
+          ],
+          "identity_proven": true,
+          "index": "1",
+          "label": "Message",
+          "operations": [
+            "TYPE_TEXT",
+            "PASTE_TEXT",
+            "KEY_CHORD",
+            "SELECT_TEXT",
+            "DRAG"
+          ],
+          "path": "0.0",
+          "role": "AXTextField",
+          "selection": [
+            23,
+            0
+          ],
+          "subtree_truncated": false,
+          "value": "Refactor verified 中文 😀",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            219,
+            883,
+            442,
+            28
+          ],
+          "identity_proven": true,
+          "index": "2",
+          "label": "Password",
+          "operations": [
+            "TYPE_TEXT",
+            "PASTE_TEXT",
+            "KEY_CHORD"
+          ],
+          "path": "0.1",
+          "role": "AXTextField",
+          "secure": true,
+          "subrole": "AXSecureTextField",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            219,
+            931,
+            182,
+            30
+          ],
+          "identity_proven": true,
+          "index": "3",
+          "label": "Advance",
+          "operations": [
+            "PRESS"
+          ],
+          "path": "0.2",
+          "role": "AXButton",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            221,
+            983,
+            438,
+            28
+          ],
+          "identity_proven": true,
+          "index": "4",
+          "label": "Presses: 0 · Clicks: 0 · Drags: 0",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.3",
+          "role": "AXStaticText",
+          "subtree_truncated": false,
+          "value": "Presses: 0 · Clicks: 0 · Drags: 0",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            240,
+            1040,
+            80,
+            80
+          ],
+          "identity_proven": true,
+          "index": "5",
+          "label": "Blue source",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.4",
+          "role": "AXImage",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            500,
+            1040,
+            80,
+            80
+          ],
+          "identity_proven": true,
+          "index": "6",
+          "label": "Green destination",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.5",
+          "role": "AXImage",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            208,
+            786,
+            16,
+            16
+          ],
+          "identity_proven": true,
+          "index": "7",
+          "label": "Close window",
+          "operations": [
+            "PRESS"
+          ],
+          "path": "0.6",
+          "role": "AXButton",
+          "subrole": "AXCloseButton",
+          "subtree_truncated": false,
+          "value": "",
+          "window": "OCU Refactor Acceptance"
+        },
+        {
+          "enabled": true,
+          "frame": [
+            282,
+            786,
+            173,
+            16
+          ],
+          "identity_proven": true,
+          "index": "8",
+          "label": "OCU Refactor Acceptance",
+          "operations": [
+            "CLICK",
+            "DRAG"
+          ],
+          "path": "0.9",
+          "role": "AXStaticText",
+          "subtree_truncated": false,
+          "value": "OCU Refactor Acceptance",
+          "window": "OCU Refactor Acceptance"
+        }
+      ],
+      "background_clicks": [],
+      "complete": true,
+      "truncated": false,
+      "truncations": []
+    }
+  },
+  "cases": [
+    {
+      "name": "background",
+      "page": "before",
+      "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
+      "history": [],
+      "pointer": false,
+      "refused": [],
+      "request_sha256": "55d219693f18a732b8f63b71904a369abb6ee0289647d3d1733d61aa49986446"
+    },
+    {
+      "name": "pointer",
+      "page": "before",
+      "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
+      "history": [],
+      "pointer": true,
+      "refused": [],
+      "request_sha256": "65282317ec92b1b3f179e080ebf96f7f32b6b9682493aec2c56ae61c47c9ab7e"
+    },
+    {
+      "name": "refused-field",
+      "page": "before",
+      "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
+      "history": [],
+      "pointer": false,
+      "refused": [
+        [
+          "TYPE_TEXT",
+          "0.0"
+        ]
+      ],
+      "request_sha256": "14e20abca0808326793e8b782c7db0aa458354e7a946ad0a9d660a2b3be5de79"
+    },
+    {
+      "name": "after-delivery",
+      "page": "after",
+      "goal": "Replace the Message field with exactly 'Refactor verified 中文 😀'.",
+      "history": [
+        {
+          "step": 1,
+          "operation": "TYPE_TEXT",
+          "target": "1",
+          "label": "Message",
+          "text": "Refactor verified 中文 😀",
+          "risk": 0.0,
+          "secure": false,
+          "disposition": {
+            "delivery": "delivered_verified",
+            "retry": "unsafe"
+          },
+          "mechanism": "AXValue",
+          "detail": "AXTextField \"Message\" =\"Refactor verified 中文 😀\"",
+          "took_focus": false,
+          "verified_by_app": true,
+          "confidence": 0.9,
+          "risk_reason": "reversible interface state",
+          "latency_ms": 8,
+          "text_helper": null,
+          "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0
+          },
+          "window_changed": true,
+          "executed_ms": 270,
+          "elapsed_ms": 308
+        }
+      ],
+      "pointer": false,
+      "refused": [],
+      "request_sha256": "f96aecdec913dd3c472b64796e137be917ab870d36d5663d0d663dc12688b859"
+    }
+  ]
+}

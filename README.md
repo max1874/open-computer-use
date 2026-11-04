@@ -715,7 +715,8 @@ More, in English and Chinese: [max1874.com/open-computer-use](https://max1874.co
 | --- | --- |
 | [`axbridge.swift`](open_computer_use/axbridge.swift) | The accessibility snapshot, the indexed table, and guarded execution |
 | [`agent.py`](open_computer_use/agent.py) | The loop, the guard gate, and the staleness handling |
-| [`model.py`](open_computer_use/model.py) | The action space and the one request that fills every head |
+| [`actions.py`](open_computer_use/actions.py) | The observed action table and the answer schema shared by both backends |
+| [`model.py`](open_computer_use/model.py) | Provider requests and interpretation of the chosen answer |
 | [`desktop.py`](open_computer_use/desktop.py) | The long-lived bridge and the settle policy |
 | [`questions.py`](open_computer_use/questions.py) | The instructions and the budgets |
 | [`demo.py`](open_computer_use/demo.py) | The local inspector |
