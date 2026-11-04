@@ -26,8 +26,9 @@ class TreeContracts(unittest.TestCase):
         self.assertEqual(page["nodes_observed"], 3)
 
     def test_secure_host_field_does_not_enter_the_value_table(self):
-        page = parse("1 secure text field Password, Value: synthetic-secret")
+        page = parse("1 secure text field (settable) Password, Value: synthetic-secret")
         self.assertTrue(page["elements"][0]["secure"])
+        self.assertIn("TYPE_TEXT", page["elements"][0]["operations"])
         self.assertEqual(page["elements"][0]["value"], "")
         self.assertNotIn("synthetic-secret", json.dumps(page))
 

@@ -94,7 +94,7 @@ PRESSABLE = {
     "combo box",
     "stepper",
 }
-EDITABLE = {"text field", "search field", "combo box"}
+EDITABLE = {"text field", "secure text field", "search field", "combo box"}
 # Everything that carries content and answers to no action of its own. Computer
 # Use will click any index, so these are reachable — which is the same argument
 # that put CLICK in the bridge, arrived at from the other direction.

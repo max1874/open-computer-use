@@ -26,7 +26,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function decider({ python = "python3", env = {} } = {}) {
   const child = spawn(python, ["-m", "open_computer_use.decide"], {
     cwd: REPO,
-    env: { ...process.env, ...env },
+    // Sandboxed hosts may expose child_process without a global process object.
+    env: typeof process === "undefined"
+      ? (Object.keys(env).length ? env : undefined)
+      : { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buffer = "";
