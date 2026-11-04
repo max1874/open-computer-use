@@ -15,7 +15,8 @@ uv run --env-file .env python -m evals.run \
 
 A pass requires all of the following:
 
-- The independent app check is false after setup and true after the real Agent run. No expected answer is injected by a scripted solve. Calculator reads its display, TextEdit its document, Settings the detail pane's heading, Safari its window title, and Dictionary its definition text. Finder reads the exact owned window's target directory, so row selection cannot satisfy opening a folder.
+- The independent app check is false after setup and true after the real Agent run. No expected answer is injected by a scripted solve. Calculator reads its display, TextEdit its document, Settings its pane title (or a recognized detail heading while the title is unavailable), Safari its window title, and Dictionary its definition text. Finder reads the exact owned window's target directory, so row selection cannot satisfy opening a folder.
+- System Settings navigation tasks hold operations other than native row selection, scrolling, waiting and Escape, using the existing approval callback; they never approve unrelated preference changes.
 - The Agent ended with `done`. `DONE` with a false reading is recorded separately as `false_done`.
 - The activation-event observer started before app setup and ended after cleanup. **Any activation event invalidates this run**, including during cleanup. An unrelated human app switch is conservatively inconclusive; the runner does not label it task-caused or silently exclude it. It never restores foreground focus.
 - The owned instance/window was confirmed closed. Missing observer endpoints, native errors and cleanup failures invalidate acceptance.

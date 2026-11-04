@@ -515,20 +515,28 @@ func popupOptions(_ element: AXUIElement, index: String) -> [[String: Any]] {
     return out
 }
 
-/// AX scroll bars publish normalized positions. Use their writable value:
-/// SwiftUI can advertise page-scroll actions and then reject those actions.
-func verticalScrollBar(_ area: AXUIElement) -> (bar: AXUIElement, position: Double, step: Double)? {
+/// Scroll the observed area's native page controls. Area-level scroll actions
+/// can be advertised but unimplemented, and content bounds can be clipped.
+func scrollControls(_ area: AXUIElement) -> (bar: AXUIElement, position: Double, buttons: [String: AXUIElement])? {
     guard !secureField(area) else { return nil }
-    guard let bar = children(area).first(where: {
+    let bars = children(area).filter {
         string($0, kAXRoleAttribute) == kAXScrollBarRole
             && string($0, kAXOrientationAttribute) == "AXVerticalOrientation"
-    }), settable(bar, kAXValueAttribute), let value = attr(bar, kAXValueAttribute) as? NSNumber else { return nil }
+    }
+    guard bars.count == 1, let bar = bars.first, !secureField(bar),
+          let value = attr(bar, kAXValueAttribute) as? NSNumber else { return nil }
     let position = value.doubleValue
-    let viewport = frame(area).height
-    let content = children(area).filter { string($0, kAXRoleAttribute) != kAXScrollBarRole }
-        .map { frame($0).height }.max() ?? 0
-    guard position.isFinite, (0...1).contains(position), viewport > 0, content > viewport else { return nil }
-    return (bar, position, min(1, Double(viewport / (content - viewport))))
+    guard position.isFinite, (0...1).contains(position) else { return nil }
+    var buttons: [String: AXUIElement] = [:]
+    for child in children(bar) where string(child, kAXRoleAttribute) == kAXButtonRole {
+        guard bool(child, kAXEnabledAttribute) ?? true, actionNames(child).contains(kAXPressAction) else { continue }
+        switch string(child, kAXSubroleAttribute) {
+        case "AXIncrementPage" where position < 1: buttons["SCROLL_DOWN"] = child
+        case "AXDecrementPage" where position > 0: buttons["SCROLL_UP"] = child
+        default: break
+        }
+    }
+    return (bar, position, buttons)
 }
 
 func operations(for element: AXUIElement, role: String, surface: AXUIElement?, enabled: Bool, named: Bool = false) -> [String] {
@@ -537,10 +545,7 @@ func operations(for element: AXUIElement, role: String, surface: AXUIElement?, e
     var out: [String] = []
     let available = Set(actionNames(element))
     if role == kAXScrollAreaRole {
-        if let (_, position, _) = verticalScrollBar(element) {
-            if position > 0 { out.append("SCROLL_UP") }
-            if position < 1 { out.append("SCROLL_DOWN") }
-        }
+        if let controls = scrollControls(element) { out += controls.buttons.keys.sorted() }
     }
     if available.contains(kAXPressAction), role != kAXPopUpButtonRole, role != "AXMenuButton" {
         out.append("PRESS")
@@ -1233,15 +1238,13 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     switch op {
     case "SCROLL_UP", "SCROLL_DOWN":
         guard string(element, kAXRoleAttribute) == kAXScrollAreaRole,
-              let (bar, position, step) = verticalScrollBar(element) else {
-            throw BridgeError(message: "the observed area has no writable vertical scroll bar")
+              let controls = scrollControls(element), let button = controls.buttons[op] else {
+            throw BridgeError(message: "the observed area has no native page control for this direction")
         }
-        let next = max(0, min(1, position + (op == "SCROLL_UP" ? -step : step)))
-        guard next != position else { throw BridgeError(message: "the scroll area is already at this end") }
-        let result = try setAttribute(bar, kAXValueAttribute, NSNumber(value: next))
-        guard result == .success else { throw mutationError(result, "scroll failed: \(describe(result))") }
-        let actual = (attr(bar, kAXValueAttribute) as? NSNumber)?.doubleValue
-        return ["detail": current, "mechanism": "AXValue(scrollbar)", "verified": actual.map { abs($0 - next) < 0.001 } ?? false]
+        try perform(button, kAXPressAction)
+        let actual = (attr(controls.bar, kAXValueAttribute) as? NSNumber)?.doubleValue
+        return ["detail": current, "mechanism": "AXPress(scrollbar page)",
+                "verified": actual.map { $0 != controls.position } ?? false]
     case "PRESS":
         let role = string(element, kAXRoleAttribute)
         guard role != kAXPopUpButtonRole, role != "AXMenuButton" else {

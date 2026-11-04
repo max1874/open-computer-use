@@ -57,14 +57,18 @@ class Task:
         elif self.app == "TextEdit":
             actual = next(e["value"] for e in page["elements"] if e["role"] == "AXTextArea").strip()
         elif self.app == "System Settings":
-            # Current macOS exposes no window title. Read the detail pane's
-            # first text, never the matching navigation label in the sidebar.
-            sidebar = [e for e in page["elements"] if e["role"] == "AXScrollArea" and e["label"] == "Sidebar"]
-            if len(sidebar) != 1:
-                return None, None
-            actual = next((e["value"].strip() for e in page["elements"]
-                           if e["role"] == "AXStaticText" and not e["path"].startswith(sidebar[0]["path"] + ".")), None)
-            return (actual == self.expected if actual is not None else None), actual
+            # Pane titles can arrive after the content. A sidebar selection or
+            # an arbitrary setting label never establishes navigation.
+            actual = page["window"].replace("\u2011", "-").strip()
+            if not actual:
+                sidebar = [e for e in page["elements"] if e["role"] == "AXScrollArea" and e["label"] == "Sidebar"]
+                if len(sidebar) != 1:
+                    return None, None
+                actual = next((e["value"].strip() for e in page["elements"]
+                               if e["role"] == "AXStaticText" and not e["path"].startswith(sidebar[0]["path"] + ".")), None)
+            if actual not in {"General", "Keyboard", "Wi-Fi", "Appearance"}:
+                return None, actual
+            return actual == self.expected, actual
         elif self.app == "Dictionary":
             actual = page["text"].lower()
             return all(word in actual for word in self.expected.split("|")), actual

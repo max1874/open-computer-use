@@ -8,6 +8,8 @@ Do not repeat a step that is already satisfied. Do not toggle a checkbox, switch
 that is already in the requested state. Fill required fields before pressing a confirm button.
 Prefer a menu-bar command over hunting for a toolbar button when the menu says exactly what you want.
 A native app applies most text fields on RETURN or on focus leaving the field.
+If the goal needs a control that is not visible, scroll its observed container rather than selecting an unrelated control.
+Continue scrolling that container until the needed control appears.
 WAIT only when the control you need is absent or disabled, or something is visibly still loading.
 Recent WAIT actions are not evidence of loading; prefer any useful visible control over WAIT.
 DONE requires visible evidence in the current window that ALL requirements are satisfied.

@@ -47,5 +47,10 @@ class AcceptanceContracts(unittest.TestCase):
             self.assertEqual(task.read(123), (False, "General"))
             page["elements"][-1]["value"] = "Keyboard"
             self.assertEqual(task.read(123), (True, "Keyboard"))
+            page["elements"][-1]["value"] = "Adjust keyboard brightness in low light"
+            self.assertEqual(task.read(123), (None, "Adjust keyboard brightness in low light"))
+            page["window"] = "Keyboard"
+            self.assertEqual(task.read(123), (True, "Keyboard"))
+            page["window"] = ""
             page["elements"].pop(0)
             self.assertEqual(task.read(123), (None, None))

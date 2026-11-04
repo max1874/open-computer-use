@@ -67,7 +67,7 @@ Consequential operations are held at `risk >= 0.5`. Inspect the decision before 
 - `TYPE_TEXT` replaces a field. `PASTE_TEXT` inserts at its selection; `SELECT_TEXT` uses UTF-16 offsets. Editing keys are whitelisted and sent to the target process. Field focus is internal to that app; the bridge never activates it.
 - File-name labels identified by `AXFilename` offer selection, never field editing or renaming. Other editable table cells retain their editing capabilities.
 - `CLICK` means native row selection where the observed app supports it. It never falls back to a mouse click. This has navigated System Settings sidebar rows without moving the pointer or taking focus; it does not open an arbitrary Finder file.
-- `SCROLL_UP` and `SCROLL_DOWN` choose an observed scroll area, such as a sidebar or document, and adjust its writable native vertical scroll bar. Process identity, the captured area and live capability guard delivery.
+- `SCROLL_UP` and `SCROLL_DOWN` choose an observed scroll area, such as a sidebar or document, and press its native vertical scroll bar’s page control. Process identity, the captured area and live capability guard delivery.
 - Already-open menus can be observed. Closed menu-bar commands are offered only when the app is already active; the bridge never raises it to validate a menu. App-dependent menu titles can be stale.
 - Unicode insertion prefers `AXSelectedText`, with a temporary clipboard fallback when needed. The clipboard is restored only if another app has not changed it during the operation.
 
