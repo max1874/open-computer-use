@@ -99,3 +99,54 @@ class AgentContracts(unittest.TestCase):
             self.assertEqual(result["history"], [])
             choose.assert_not_called()
             self.desktop.act.assert_not_called()
+
+    def test_repeat_stop_precedes_third_delivery_and_keeps_secure_history_redacted(self):
+        self.decision["risk_reason"] = "Enter synthetic-input"
+        with Agent("Scratch", "Edit message") as agent:
+            for _ in range(2):
+                agent.command("tick")
+            self.decision.update(text=None, risk_reason="editing")
+            with patch("open_computer_use.agent.field_text") as helper:
+                result = agent.command("tick")
+                helper.assert_not_called()
+            self.assertEqual(self.desktop.act.call_count, 2)
+            self.assertEqual(result["status"], "blocked")
+            self.assertIsNone(result["verified"])
+            self.assertEqual([h["disposition"]["delivery"] for h in result["history"]],
+                             ["delivered_unverified", "delivered_unverified", "not_delivered"])
+            self.assertEqual(result["history"][-1]["outcome"], "not attempted")
+            self.assertNotIn("synthetic-input", json.dumps(result))
+
+    def test_returning_state_cycles_stop_before_a_fifth_delivery(self):
+        other = {**self.page, "fingerprint": "other"}
+        self.desktop.observe.side_effect = [self.page, other, self.page, other, self.page]
+        verify = Mock(return_value=True)
+        with Agent("Scratch", "Edit message", verify=verify) as agent:
+            for _ in range(5):
+                result = agent.command("tick")
+            self.assertEqual(self.desktop.act.call_count, 4)
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual([h["fingerprint"] for h in result["history"]],
+                             ["before", "other", "before", "other", "before"])
+            self.assertTrue(all(h["window_changed"] for h in result["history"][:4]))
+            verify.assert_not_called()
+
+    def test_distinct_editing_keys_are_distinct_actions(self):
+        self.decision["operation"] = "KEY_CHORD"
+        self.decision["action"]["operation"] = "KEY_CHORD"
+        with Agent("Scratch", "Move within the field") as agent:
+            for key in ("left", "left", "right"):
+                self.decision["action"]["key"] = key
+                result = agent.command("tick")
+            self.assertEqual(self.desktop.act.call_count, 3)
+            self.assertEqual([h["key"] for h in result["history"]], ["left", "left", "right"])
+            self.assertNotEqual(result["history"][-1].get("outcome"), "not attempted")
+
+    def test_wait_remains_available_on_an_unchanged_state(self):
+        self.decision.update(operation="WAIT", target=None, text=None, action={"operation": "WAIT", "op": "WAIT"})
+        with Agent("Scratch", "Wait for the app") as agent:
+            for _ in range(4):
+                result = agent.command("tick")
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(len(result["history"]), 4)
+            self.desktop.act.assert_not_called()

@@ -149,6 +149,8 @@ class Agent:
             "label": action.get("label", decision["operation"]),
             "text": None if action.get("secure") else text,
             "risk": decision["risk"],
+            "fingerprint": state["page"]["fingerprint"],
+            **{k: action[k] for k in ("key", "option", "start", "length") if k in action},
             **details,
             "elapsed_ms": state["elapsed_ms"],
         })
@@ -158,6 +160,16 @@ class Agent:
         return len(recent) == 3 and all(
             h.get("window_changed") is False and h["operation"] not in ignored for h in recent
         )
+
+    def _repeated(self, decision):
+        action = decision["action"] or {}
+        match = {"fingerprint": self.state["page"]["fingerprint"], "operation": decision["operation"],
+                 "target": decision["target"], "label": action.get("label", decision["operation"]),
+                 **{k: action.get(k) for k in ("key", "option", "start", "length")}}
+        return sum(
+            h.get("disposition", {}).get("delivery") in {"delivered_verified", "delivered_unverified"}
+            and all(h.get(k) == v for k, v in match.items()) for h in self.state["history"]
+        ) >= 2
 
     def _observe(self):
         before = self.state["page"]["fingerprint"]
@@ -284,6 +296,14 @@ class Agent:
 
         action = decision["action"]
         secure = bool(action and action.get("secure"))
+        if operation != "WAIT" and self._repeated(decision):
+            if not self.desktop.fresh(page):
+                raise StaleWindow("The window changed before the repeat check. Choose again.")
+            state["status"] = "blocked"
+            state["note"] = f"Stopped before repeating {operation} a third time on the same observed state."
+            self._record(decision, secure=secure, outcome="not attempted", disposition=disposition("not_delivered"),
+                         detail=state["note"], window_changed=False)
+            return
         text, helper = None, None
         # Preparation failure sent no input; retain it as a refused step.
         try:

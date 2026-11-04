@@ -95,7 +95,7 @@ Secure fields are classified before value reads; their values and descendants ar
 
 ## Limits and verification
 
-One app per run, including its accessible windows and open menus. Publication budgets and identity census limits are separate; incomplete observations are explicit. A run stops at 40 operations, 80 decisions or three consecutive unchanged operations. State-changing cycles can still consume the budget. Model task success varies independently of reliable execution.
+One app per run, including its accessible windows and open menus. Publication budgets and identity census limits are separate; incomplete observations are explicit. A run stops at 40 operations, 80 decisions, three consecutive unchanged operations, or before delivering the same action a third time on the same observed state. WAIT is exempt from repeat stopping. Existing history supplies the count; a stop is blocked, never task success. Observed state can hide real progress, and changing or unobserved state can evade this heuristic. Model task success varies independently of reliable execution.
 
 `examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
 
