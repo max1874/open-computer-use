@@ -1,28 +1,74 @@
 # open-computer-use ⌘
 
-A macOS agent that completes tasks through the accessibility tree while you keep using another app.
+**Agents use your Mac's apps in the background, while you keep using yours.**
+No screenshots, no pointer, no app brought to the front.
 
-<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="Background Calculator computing 12 × 34"></a>
+<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="Calculator computing 12 × 34 behind another app"></a>
 
-Give it one app and one natural-language goal. Each observation produces a numbered table of the controls the app actually exposes. One model request chooses an operation, its observed target, the text to enter and the risk rating. The native bridge executes once, then reads the app again.
+Most computer-use agents look at the screen and move the mouse, so the Mac is theirs while they work. open-computer-use reads an app through the macOS accessibility tree instead, turns it into a numbered table of the controls the app actually exposes, and acts on one of them through a native bridge that never activates the app.
 
-**Acceptance means the requested result is observed in the app and the run never takes foreground focus.** A model saying `DONE`, an API success or an unchanged frontmost PID at two sample points does not establish that.
+| Problem | What happens here |
+| --- | --- |
+| The agent needs your screen and your pointer | Observation is the accessibility tree; execution is `AXPress`, `AXValue` and keys addressed to the app's process. No screenshot, mouse event or activation path exists in the bridge |
+| The UI moved between looking and clicking | A target is a reference from one observation, bound to the process instance and re-identified against a fresh census before any input |
+| A retry presses the button twice | Each decision executes at most once. Delivery is recorded before the result is read, and an uncertain delivery stops instead of replaying |
+| "Done" is only the model's opinion | Acceptance is the requested result read back from the app, plus an independent record of zero app activations for the whole task |
+| Passwords end up in logs | Secure fields are classified before any value is read; their values are omitted and typed input is redacted from history |
 
-## Run
+## How it fits together
 
-Requires macOS, Python 3.11+, Swift and Accessibility permission for the terminal or app launching the bridge. No Screen Recording permission is used.
-
-```sh
-uv sync --extra agent
-scripts/build.sh
-uv run --extra agent --env-file .env open-computer-use inspect --no-open
+```text
+                     the app (stays in the background)
+                       │  accessibility tree         ▲  AXPress · AXValue · keys to its pid
+                       ▼                             │
+ axbridge (Swift) ── observe ──► indexed table ──► guarded act ──► observe again
+                                     │                  ▲
+                                     ▼                  │
+                     a decision: one operation, one observed target
+                     ├─ a coding agent through `open-computer-use observe / act`
+                     └─ the built-in Agent: one model request per step
 ```
 
-Open the inspector at `http://127.0.0.1:8767`. It shows the observed element table, pending decision, risk and executed history. The server binds to loopback and requires its startup token for changes.
+Requires macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/), the Swift toolchain (Xcode Command Line Tools), and Accessibility permission for the app that launches the bridge (your terminal, or the agent's host app). Screen Recording is not used.
 
-For a command-line task:
+## Drive it from a coding agent
+
+Claude Code, Codex or any agent with a shell can be the decision model itself. No model backend or API key is involved.
 
 ```sh
+git clone https://github.com/max1874/open-computer-use.git
+open-computer-use/install.sh
+```
+
+`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool (a `git pull` is the update) and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
+
+```console
+$ open-computer-use status
+{"accessibility": true, "frontmost": "Otty", "frontmost_pid": 2544, "locked": false}
+```
+
+The loop is observe, act, read back:
+
+```console
+$ open -g -a Calculator                     # launch without bringing it forward
+$ open-computer-use observe Calculator
+{"app": "Calculator", "window": "Calculator", "active": false, "fingerprint": "f793449f2824", "controls": [...]}
+{"index": "e14", "role": "Button", "label": "1", "operations": ["PRESS"]}
+{"index": "e15", "role": "Button", "label": "2", "operations": ["PRESS"]}
+...
+$ open-computer-use act Calculator f793449f2824 PRESS e14
+{"operation": "PRESS", "label": "1", "outcome": "delivered", "delivery": "delivered_unverified", "took_focus": false, ...}
+{"app": "Calculator", "window": "Calculator", "active": false, "fingerprint": "…", ...}
+```
+
+`act` starts a fresh bridge, observes again and sends nothing unless the fingerprint still matches the observation the operation was chosen from. It then executes through the same guards and prints the outcome followed by the next observation. Text goes in with `--text`, keys with `--key`, selections with `--start` and `--length`; `observe --text` adds the window's visible text.
+
+## Or give the built-in agent a goal
+
+One app, one natural-language goal. Each step is one model request that chooses the operation, its observed target, any text to enter and a risk rating.
+
+```sh
+uv sync
 uv run --env-file .env python examples/run.py \
   --app TextEdit --goal 'Replace the document text with a haiku about rain.'
 ```
@@ -35,25 +81,7 @@ DECISION_MODEL=deepseek-flash
 DECISION_API_KEY=your-key
 ```
 
-The model-driven Agent and Inspector use the optional `agent` extra (`pip install "open-computer-use[agent]"` or `uv sync --extra agent`). Their public Python API is unchanged.
-
-The optional Jev backend answers structured choice heads instead of writing JSON. Set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot generate field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper, falling back to the decision backend settings. The product reads only user-configured environment variables.
-
-The chat backend supports JSON schema and JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behavior. No token logprobs are requested.
-
-## From a coding agent
-
-The native CLI has no Python runtime dependencies and loads neither the model client nor the Inspector. A coding agent can be the decision model itself. `install.sh` compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. No decision backend or key is involved.
-
-```sh
-open-computer-use observe Calculator        # header with fingerprint, then one element per line
-open-computer-use act Calculator 3f9a1c2e7b10 PRESS e14
-open-computer-use act TextEdit 9ff54a0e5b69 TYPE_TEXT e1 --text 'Hello'
-```
-
-Each invocation starts its own bridge. `act` observes again and sends nothing unless the fingerprint still matches the observation the operation was chosen from, then executes through the same guards and prints the delivery outcome and the next observation.
-
-## Python
+From Python, with the result checked in the app rather than taken from the model:
 
 ```python
 from open_computer_use import Agent
@@ -69,58 +97,70 @@ with Agent("TextEdit", f"Replace the document with exactly '{sentence}'.", verif
     print(agent.state["verified"])
 ```
 
-`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim. `verified` checks the goal only; it does not certify the whole background interval. An optional `focus_check` callback connects the caller's existing full-task monitor: `True` means clear so far, `False` a recorded activation, and `None` unavailable. A violation or unavailable configured monitor stops before further input. The caller must keep monitoring through cleanup before accepting the task.
+`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim.
 
-Consequential operations are held at `risk >= 0.5`. Inspect the decision before calling `agent.approve_pending()`, or supply an `approve(decision)` callback. The rating shares the decision request; it is the same model's judgment, not an independent safety reviewer.
+Operations rated `risk >= 0.5` are held. Inspect the decision before calling `agent.approve_pending()`, or pass an `approve(decision)` callback. The rating comes from the same request and the same model; it is not an independent safety reviewer.
 
-## Background operations
+`uv run --env-file .env open-computer-use inspect` serves a local inspector at `http://127.0.0.1:8767` with the element table, the pending decision, its risk and the executed history. It binds to loopback and requires its startup token for changes.
 
-`PRESS`, `TYPE_TEXT`, `PASTE_TEXT`, `SELECT_TEXT`, `KEY_CHORD`, `SELECT`, `CLICK`, `MENU`, `SCROLL_UP`, `SCROLL_DOWN`, `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT`, `DONE`, `BLOCKED`.
+<details>
+<summary>More backend settings</summary>
 
-- `PRESS` uses `AXPress`; menu-opening popup and menu-button presses are withheld because they can activate an inactive app.
-- `TYPE_TEXT` replaces a field. `PASTE_TEXT` inserts at its selection; `SELECT_TEXT` uses UTF-16 offsets. Editing keys are whitelisted and sent to the target process. Field focus is internal to that app; the bridge never activates it.
-- File-name labels identified by `AXFilename` offer selection, never field editing or renaming. Other editable table cells retain their editing capabilities.
-- `CLICK` means native row selection where the observed app supports it. It never falls back to a mouse click. This has navigated System Settings sidebar rows without moving the pointer or taking focus; it does not open an arbitrary Finder file.
-- `SCROLL_UP` and `SCROLL_DOWN` choose an observed scroll area, such as a sidebar or document, and press its native vertical scroll bar’s page control. Process identity, the captured area and live capability guard delivery.
-- Already-open menus can be observed. Closed menu-bar commands are offered only when the app is already active; the bridge never raises it to validate a menu. App-dependent menu titles can be stale.
-- Unicode insertion prefers `AXSelectedText`, with a temporary clipboard fallback when needed. The clipboard is restored only if another app has not changed it during the operation.
+- **Jev** answers structured choice heads instead of writing JSON: set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot write field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper and fall back to the decision backend's settings.
+- The chat backend uses JSON schema or JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behaviour. No token logprobs are requested.
+- The product reads only environment variables the user configured.
 
-There is one native executor. Activation flags, Codex-host execution, mouse input, dragging, screenshots and visual fallback have been removed. A canvas without usable accessibility controls is outside scope; it cannot be made a successful background task by taking the screen.
+</details>
 
-Known `took_focus` facts stop the Agent, including facts returned with post-dispatch errors. CLI `act` returns `focus_violation` and exit code 3; this is never a retry instruction. Other exits are 0 for a delivered command, 1 for refusal/staleness, and 2 for uncertain or unconfirmed delivery. None establishes whole-task success.
+## Operations
 
-Native APIs can still cause app-specific side effects. `took_focus` records observed endpoint changes only. Full-run acceptance independently listens for macOS application-activation events, including a transient activation followed by a return to the original app. A run that changes the requested value but steals focus fails acceptance. Bringing the previous app back does not undo that failure.
+| Operation | What it does, in the background |
+| --- | --- |
+| `PRESS` | `AXPress` on a button, checkbox, row, tab, link or disclosure. Popup and menu-button presses are withheld, because AppKit can activate an app to show a menu |
+| `TYPE_TEXT` | Replace a field's contents |
+| `PASTE_TEXT` | Insert at the field's selection. Unicode goes in through `AXSelectedText`, falling back to a temporary clipboard that is restored only if no other app changed it meanwhile |
+| `SELECT_TEXT` | Select a UTF-16 range in a field |
+| `KEY_CHORD` | Send a whitelisted editing key to the target process only. Field focus stays internal to that app |
+| `SELECT` | Choose an observed option of a pop-up button |
+| `CLICK` | Native row selection where the app supports it, never a mouse click. It has moved through System Settings' sidebar; it does not open an arbitrary Finder file |
+| `MENU` | Run a menu-bar command. Offered only when the app is already active: the bridge never raises it to read a menu. Already-open menus are always observable |
+| `SCROLL_UP` / `SCROLL_DOWN` | Page an observed scroll area, such as a sidebar or document, through its native scroll bar's page control |
+| `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT` | Targetless controls |
+| `DONE`, `BLOCKED` | Built-in agent only: the model's verdict |
 
-## Delivery and identity
+File names identified by `AXFilename` offer selection only, never editing or renaming; other editable table cells keep their editing operations. There is one native executor: activation flags, host-specific execution, mouse input, dragging, screenshots and visual fallback have all been removed. A canvas without usable accessibility controls is out of scope, and cannot be made a background task by taking the screen.
 
-Every action result and bridge exception carries `disposition`. Action replies missing or contradicting it are protocol failures: the bridge is reset, the in-flight mutation remains uncertain, and no input is replayed. `AXBRIDGE_BIN` overrides must implement the current protocol.
+## Guarantees
 
-The delivery states are:
+Every result and bridge exception carries a `disposition`:
 
 | Delivery | Evidence | Retry |
 | --- | --- | --- |
-| `not_delivered` | Refused before input | `safe` |
-| `delivery_uncertain` | Input may have arrived; reliable reply missing | `unsafe` |
+| `not_delivered` | Refused before any input | `safe` |
+| `delivery_uncertain` | Input may have arrived; no reliable reply | `unsafe` |
 | `delivered_unverified` | Input sent; outcome unconfirmed | `unsafe` |
-| `delivered_verified` | Post-action value or checkbox-state read-back matched | `unsafe` |
+| `delivered_verified` | The value or checkbox state read back matched | `unsafe` |
 
-The agent consumes each decision once and records execution before reading its result. It never replays a mutation. Unknown delivery stops the run with its history intact. Verified delivery is separate from completing the whole task.
+- **Once only.** A decision is consumed before input and its execution recorded before its result is read. A mutation is never replayed; unknown delivery stops the run with its history intact. Verified delivery is not the same as a finished task.
+- **Identity.** Targets are bound to the process PID and start time. Role, name and optional native identifier must be unique across the captured surface, including unpublished nodes; an incomplete or ambiguous identity is not executable, and a changed child path alone cannot select another control.
+- **Transport.** AX metadata is batched per traversal, with separate read and write deadlines. A broken transport discards the helper; the next request starts a new one without replaying old input. Permission probes run in a fresh process.
+- **Secrets.** Secure fields are classified before value reads; their values and descendants are omitted and generated input is removed from public decisions and history. A secret the caller writes into the goal itself is not scrubbed.
+- **Focus.** `took_focus` samples the endpoints of one operation. Native APIs can still have app-specific side effects, so acceptance listens for macOS activation events across the whole task: a transient activation fails it, even if focus returns before the reply.
 
-Targets are references from one observation, bound to the process PID and start time. Their role, name and optional native identifier must be unique across the captured surface, including unpublished nodes. An incomplete or ambiguous identity is not executable. A fresh census re-identifies the target before input; a changed child path alone cannot select the wrong control.
+## Limits
 
-AX metadata is batched per traversal. Read and write deadlines are separate. A broken transport discards the helper; the next request starts a new one without replaying the old input. Permission probes run in a fresh process.
+- One app per run, including its accessible windows and open menus. Cross-app work needs an outer coordinator.
+- Control and content publication budgets are separate from the identity census limit; an incomplete observation says so.
+- The built-in agent stops at 40 operations, 80 decisions, three consecutive operations that change nothing, or before delivering the same action a third time on the same observed state (`WAIT` excepted). A stop is `blocked`, never success, and changing or unobserved state can evade the heuristic.
+- A model's task success varies independently of reliable execution.
 
-Secure fields are classified before value reads; their values and descendants are omitted, and generated input is removed from public decisions and history. This does not scrub a secret the caller explicitly places in the goal.
+See [remaining boundaries](todo.md).
 
-## Limits and verification
+## Verification
 
-One app per run, including its accessible windows and open menus. Publication budgets and identity census limits are separate; incomplete observations are explicit. A run stops at 40 operations, 80 decisions, three consecutive unchanged operations, or before delivering the same action a third time on the same observed state. WAIT is exempt from repeat stopping. Existing history supplies the count; a stop is blocked, never task success. Observed state can hide real progress, and changing or unobserved state can evade this heuristic. Model task success varies independently of reliable execution.
+`examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. [The background acceptance runner](evals/README.md) keeps 16 task definitions, reads real app results independently and requires a complete activation-event record through cleanup; it leaves already-running user apps alone and records unavailable cases explicitly. Historical scores are not current results.
 
-`examples/calculator.py` delegates to the shared owned-instance acceptance runner; supply `--max-calls`, `--usage-file` and `--output` for your approved batch. Its optional `--goal` and `--expect` still customize the single task. `examples/textedit.py` edits an already-open disposable document and reports its goal reading only. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
-
-[The background acceptance runner](evals/README.md) retains the 16 legacy task definitions, reads real app results independently and requires a complete activation-event record through cleanup. It preserves already-running user apps and records unavailable cases explicitly; historical scores are not current results.
-
-`scripts/mock_model.py` is a loopback stand-in for exercising transport and execution without paid model calls. It proves no model intelligence. Unit and source-contract tests run in the existing CI, together with the Swift build; they do not replace real background task acceptance.
+`scripts/mock_model.py` is a loopback stand-in for exercising transport and execution without paid model calls; it proves nothing about model intelligence. CI runs the Python contracts, native-source guards and the Swift build, which do not replace a real background task.
 
 ## Read the implementation
 
@@ -134,4 +174,4 @@ One app per run, including its accessible windows and open menus. Publication bu
 | `cli.py` | `observe` / `act` for an agent acting as the decision model |
 | `demo.py` | Local inspector |
 
-Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). See [design](docs/design.md) and [remaining boundaries](todo.md).
+The [design notes](docs/design.md) explain each boundary. Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). MIT licensed; see [LICENSE](LICENSE).
