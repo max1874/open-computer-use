@@ -5,7 +5,10 @@ description = "A macOS computer-use agent that chooses instead of generating. Na
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["httpx[http2]>=0.28,<1"]
+dependencies = []
+
+[project.optional-dependencies]
+agent = ["httpx[http2]>=0.28,<1"]
 
 [project.urls]
 Homepage = "https://github.com/max1874/open-computer-use"
@@ -22,7 +25,7 @@ packages = ["open_computer_use"]
 artifacts = ["open_computer_use/bin/axbridge"]
 
 [dependency-groups]
-dev = ["ruff>=0.14,<1"]
+dev = ["ruff>=0.14,<1", "open-computer-use[agent]"]
 
 [tool.ruff]
 line-length = 120

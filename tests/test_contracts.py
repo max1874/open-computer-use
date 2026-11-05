@@ -46,8 +46,8 @@ class DecisionContracts(unittest.TestCase):
         self.assertEqual(decision["action"]["path"], "0.1")
         self.assertEqual(decision["action"]["option"], 0)
 
-    def test_retired_pointer_operations_cannot_be_selected(self):
-        for op in ("DRAG", "DRAG_POINT", "CLICK_POINT", "TYPE_KEYS"):
+    def test_retired_operations_cannot_be_selected(self):
+        for op in ("DRAG", "DRAG_POINT", "CLICK_POINT", "TYPE_KEYS", "INCREMENT", "DECREMENT"):
             with self.subTest(operation=op), self.assertRaises(ValueError):
                 self.decide({"operation": op, "drag_target": "1", "drag_destination": "2"})
 
@@ -135,3 +135,36 @@ for line in sys.stdin:
                 self.assertEqual(marker.read_text().splitlines(), ["delivered"])
             finally:
                 bridge.close()
+
+
+    def test_missing_or_contradictory_delivery_never_becomes_a_safe_retry(self):
+        for reported in (None, {"delivery": "delivered_unverified", "retry": "safe"},
+                         {"delivery": [], "retry": "unsafe"}):
+            with self.subTest(disposition=reported), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "deliveries"
+                helper = Path(directory) / "bridge"
+                helper.write_text(f"""#!{sys.executable}
+import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    request = json.loads(line)
+    result = {{'pong': True}}
+    if request['method'] == 'act':
+        with Path({str(marker)!r}).open('a') as output:
+            output.write('delivered\\n')
+        result = {{'verified': True}}
+        reported = {reported!r}
+        if reported is not None: result['disposition'] = reported
+    print(json.dumps({{'id': request['id'], 'ok': True, 'result': result}}), flush=True)
+""")
+                helper.chmod(0o700)
+                with patch("open_computer_use.desktop.binary", return_value=str(helper)):
+                    bridge = Bridge()
+                try:
+                    with self.assertRaises(UnknownOutcome) as caught:
+                        bridge.call("act")
+                    self.assertEqual(caught.exception.disposition["retry"], "unsafe")
+                    self.assertEqual(bridge.call("ping"), {"pong": True})
+                    self.assertEqual(marker.read_text().splitlines(), ["delivered"])
+                finally:
+                    bridge.close()

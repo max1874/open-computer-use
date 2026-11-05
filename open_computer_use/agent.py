@@ -10,7 +10,8 @@ from .desktop import (
     UnknownOutcome,
     disposition,
 )
-from .model import action_space, choose, field_context, field_text
+from .actions import action_space
+from .model import choose, field_context, field_text
 from .questions import MAX_DECISIONS, MAX_STALE_RETRIES, MAX_STEPS, RISK_THRESHOLD
 
 
@@ -74,6 +75,7 @@ class Agent:
         risk_threshold=RISK_THRESHOLD,
         menus=True,
         verify=None,
+        focus_check=None,
     ):
         goal = goal.strip() if isinstance(goal, str) else "\n".join(goal).strip()
         if not goal:
@@ -84,6 +86,9 @@ class Agent:
         # True to confirm, False to reject it, None if it cannot be judged.
         # Without one, DONE is only ever the model's own claim.
         self.verify = verify
+        # The caller owns the complete task interval, including setup/cleanup.
+        # True is clear so far, False a recorded activation, None unavailable.
+        self.focus_check = focus_check
         self.pending_text = None
         # (operation, path) pairs this app has refused on the window as it
         # now stands. Cleared the moment the window changes, because a
@@ -128,6 +133,8 @@ class Agent:
         return round((time.perf_counter() - self.state["started_at"]) * 1000)
 
     def command(self, name, body=None):
+        if self._focus_failed():
+            return self.snapshot()
         if name == "tick":
             self._tick()
         elif name == "predict":
@@ -136,12 +143,32 @@ class Agent:
             self._act(body or {})
         else:
             raise ValueError(f"Unknown command {name!r}")
+        self._focus_failed()
         return self.snapshot()
+
+    def _focus_failed(self, decision=None):
+        if self.focus_check is None:
+            return False
+        try:
+            clear = self.focus_check()
+        except Exception:
+            clear = None
+        if clear is True:
+            return False
+        self.state.update(status="blocked", decision=None, note=(
+            "Activation occurred during the monitored interval; stopped without further input."
+            if clear is False else "The focus monitor is unavailable; stopped without further input."))
+        if decision:
+            self._record(decision, outcome="not attempted", disposition=disposition("not_delivered"),
+                         detail=self.state["note"], window_changed=False)
+        return True
 
     def _record(self, decision, text=None, **details):
         state = self.state
         action = decision["action"] or {}
         state["elapsed_ms"] = self._elapsed()
+        if details.get("took_focus"):
+            state.update(took_focus=True, note="Foreground focus changed to the target app. Stopped; background acceptance failed.")
         state["history"].append({
             "step": len(state["history"]) + 1,
             "operation": decision["operation"],
@@ -264,6 +291,8 @@ class Agent:
         operation = decision["operation"]
 
         if operation in {"DONE", "BLOCKED"}:
+            if self._focus_failed(decision):
+                return
             if not self.desktop.fresh(page):
                 state["status"] = "ready"
                 raise StaleWindow("The window changed since the decision. Choose again.")
@@ -337,6 +366,8 @@ class Agent:
                 state["note"] = detail
             return
 
+        if self._focus_failed(decision):
+            return
         if operation == "WAIT":
             time.sleep(0.15)
             result = {"detail": "waited", "mechanism": "sleep", "disposition": disposition("not_delivered")}
@@ -351,6 +382,7 @@ class Agent:
                     text=text,
                     secure=secure,
                     outcome="executed, unconfirmed" if certain else "unknown",
+                    took_focus=getattr(error, "took_focus", False),
                     disposition=error.disposition,
                     detail=str(error),
                 )
@@ -373,6 +405,7 @@ class Agent:
                     text=text,
                     secure=secure,
                     outcome="failed",
+                    took_focus=getattr(error, "took_focus", False),
                     disposition=error.disposition,
                     detail=str(error),
                     path=action.get("path") if action else None,
@@ -388,8 +421,8 @@ class Agent:
                     return
                 state["elapsed_ms"] = self._elapsed()
                 stuck = self._stalled()
-                state["status"] = "blocked" if stuck else "ready"
-                if stuck:
+                state["status"] = "blocked" if stuck or state["took_focus"] else "ready"
+                if stuck and not state["took_focus"]:
                     state["note"] = f"{operation} was refused: {error}"
                 return
         self.pending_text = None
@@ -415,8 +448,6 @@ class Agent:
             window_changed=None,
             executed_ms=self._elapsed(),
         )
-        if result.get("took_focus"):
-            state["took_focus"] = True
         try:
             changed = self._observe()
         except BridgeError as error:
@@ -432,7 +463,7 @@ class Agent:
         )
         # Three operations that changed nothing visible is a stuck policy.
         stuck = self._stalled({"WAIT", "SCROLL_UP", "SCROLL_DOWN"})
-        state["status"] = "blocked" if stuck else "ready"
+        state["status"] = "blocked" if stuck or state["took_focus"] else "ready"
         return
 
     def run(self):

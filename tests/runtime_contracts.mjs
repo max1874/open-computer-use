@@ -6,7 +6,7 @@ const source = await readFile(new URL('../open_computer_use/axbridge.swift', imp
 
 test('the native bridge has no activation, cursor delivery or screenshot escape hatch', () => {
   for (const forbidden of [/\.activate\s*\(/, /cghidEventTap/, /mouseEventSource/,
-                           /case "activate"/, /case "capture"/, /case "DRAG"/, /CGPreflightScreenCaptureAccess/]) {
+                           /case "activate"/, /case "capture"/, /case "DRAG"/, /case "INCREMENT"/, /case "DECREMENT"/, /CGPreflightScreenCaptureAccess/]) {
     assert.doesNotMatch(source, forbidden);
   }
   assert.match(source, /event\.postToPid\(pid\)/);
@@ -14,7 +14,7 @@ test('the native bridge has no activation, cursor delivery or screenshot escape 
 });
 
 test('native row clicks cannot fall through to a physical pointer route', () => {
-  const click = source.slice(source.indexOf('    case "CLICK":'), source.indexOf('    case "INCREMENT"'));
+  const click = source.slice(source.indexOf('    case "CLICK":'), source.indexOf('    case "KEY_CHORD"'));
   assert.match(click, /guard let target = backgroundClickTarget/);
   assert.match(click, /throw BridgeError/);
   assert.match(click, /setAttribute\(target.element, target.attribute, target.value\)/);

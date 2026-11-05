@@ -207,6 +207,7 @@ enum Delivery: String {
 struct BridgeError: Error {
     let message: String
     var delivery: Delivery = .notDelivered
+    var tookFocus = false
 }
 
 func mutationError(_ result: AXError, _ message: String) -> BridgeError {
@@ -556,11 +557,6 @@ func operations(for element: AXUIElement, role: String, surface: AXUIElement?, e
         if !secureField(element), settable(element, kAXSelectedTextRangeAttribute) { out.append("SELECT_TEXT") }
     }
     if role == kAXPopUpButtonRole || role == "AXMenuButton" { out.append("SELECT") }
-    if available.contains(kAXIncrementAction) { out.append("INCREMENT") }
-    if available.contains(kAXDecrementAction) { out.append("DECREMENT") }
-    // Only where the accessibility API offers nothing. CLICK is aimed at a
-    // rectangle rather than addressed to an element, so it is the weaker way to
-    // reach anything that can also be pressed.
     if out.isEmpty, named, clickableContentRoles.contains(role) { out.append("CLICK") }
     // AXShowMenu is deliberately not offered. It works, but showing a menu
     // requires macOS to activate the app, so the one operation that opens a
@@ -1139,7 +1135,7 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
         throw BridgeError(message: "act needs app and op")
     }
     guard ["PRESS", "CLICK", "TYPE_TEXT", "PASTE_TEXT", "SELECT_TEXT", "KEY_CHORD",
-           "SELECT", "MENU", "KEY", "SCROLL_UP", "SCROLL_DOWN", "INCREMENT", "DECREMENT"].contains(op) else {
+           "SELECT", "MENU", "KEY", "SCROLL_UP", "SCROLL_DOWN"].contains(op) else {
         throw BridgeError(message: "unsupported background operation \(op)")
     }
     let app = try runningApp(appName)
@@ -1157,9 +1153,14 @@ func execute(_ request: [String: Any]) throws -> [String: Any] {
     dispatchStarted = false
     defer { dispatchProcess = nil }
     let before = frontmostPID()
-    let result = try executeAction(request, app: app, op: op)
-    try requireProcess()
-    return result.merging(focusFacts(before, app)) { _, fact in fact }
+    do {
+        let result = try executeAction(request, app: app, op: op)
+        try requireProcess()
+        return result.merging(focusFacts(before, app)) { _, fact in fact }
+    } catch var error as BridgeError {
+        error.tookFocus = focusFacts(before, app)["took_focus"] as? Bool ?? false
+        throw error
+    }
 }
 
 func executeAction(_ request: [String: Any], app: NSRunningApplication, op: String) throws -> [String: Any] {
@@ -1274,12 +1275,6 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
             throw mutationError(result, "background click failed: \(describe(result))")
         }
         return ["detail": current, "mechanism": target.attribute]
-    case "INCREMENT", "DECREMENT":
-        // Actions the element published about itself. Asking the app to step
-        // its own control moves nothing on screen and aims at nothing.
-        let action = op == "INCREMENT" ? kAXIncrementAction : kAXDecrementAction
-        try perform(element, action)
-        return ["ok": true, "detail": current, "mechanism": action]
     case "KEY_CHORD":
         guard let key = request["key"] as? String else { throw BridgeError(message: "KEY_CHORD needs a key") }
         let editingKeys = Set("cmd+a cmd+c cmd+x cmd+v cmd+z cmd+shift+z cmd+left cmd+right left right up down shift+left shift+right alt+left alt+right shift+alt+left shift+alt+right delete forwarddelete tab shift+tab return escape".split(separator: " ").map(String.init))
@@ -1544,7 +1539,7 @@ func handle(_ request: [String: Any]) -> [String: Any] {
         let delivery: Delivery = method == "act" && dispatchStarted && error.delivery == .notDelivered
             ? .deliveredUnverified : error.delivery
         return ["id": id, "ok": false, "error": error.message,
-                "acted": delivery != .notDelivered, "disposition": delivery.disposition]
+                "disposition": delivery.disposition, "took_focus": error.tookFocus]
     } catch {
         let delivery: Delivery = method == "act" ? .uncertain : .notDelivered
         return ["id": id, "ok": false, "error": "\(error)", "disposition": delivery.disposition]

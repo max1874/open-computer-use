@@ -17,7 +17,6 @@ import sys
 import time
 from contextlib import closing
 
-from . import demo
 from .actions import EDITING_KEYS, action_space
 from .desktop import Bridge, BridgeError, Desktop, Executed, StaleWindow, UnknownOutcome
 
@@ -104,10 +103,14 @@ def act(options):
             # Executed is the certain-delivery subclass. Either way: never retry blind.
             outcome = {"outcome": "executed, unconfirmed" if isinstance(error, Executed) else "unknown",
                        "delivery": error.disposition["delivery"],
+                       "took_focus": getattr(error, "took_focus", False),
                        "detail": f"{error} Read the window before sending anything else."}
             code = 2
         except BridgeError as error:
-            outcome, code = {"outcome": "refused", "delivery": error.disposition["delivery"], "detail": str(error)}, 1
+            outcome, code = {"outcome": "refused", "delivery": error.disposition["delivery"],
+                             "took_focus": getattr(error, "took_focus", False), "detail": str(error)}, 1
+        if outcome.get("took_focus"):
+            outcome["outcome"], code = "focus_violation", 3
         emit({"operation": options.operation, "label": action.get("label", options.operation), **outcome})
         try:
             show(desktop.observe())
@@ -135,11 +138,12 @@ def main(argv=None):
     run.add_argument("--length", type=int, help="SELECT_TEXT UTF-16 length")
     commands.add_parser("inspect", help="the local inspector for the built-in agent", add_help=False)
     options, rest = parser.parse_known_args(argv)
-    if options.command == "inspect":
-        return demo.main(rest)
-    if rest:
+    if rest and options.command != "inspect":
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     try:
+        if options.command == "inspect":
+            from .demo import main as inspect
+            return inspect(rest)
         if options.command in {"status", "apps"}:
             with closing(Bridge()) as bridge:
                 emit(bridge.call(options.command))

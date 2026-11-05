@@ -13,9 +13,9 @@ Give it one app and one natural-language goal. Each observation produces a numbe
 Requires macOS, Python 3.11+, Swift and Accessibility permission for the terminal or app launching the bridge. No Screen Recording permission is used.
 
 ```sh
-uv sync
+uv sync --extra agent
 scripts/build.sh
-uv run --env-file .env open-computer-use inspect --no-open
+uv run --extra agent --env-file .env open-computer-use inspect --no-open
 ```
 
 Open the inspector at `http://127.0.0.1:8767`. It shows the observed element table, pending decision, risk and executed history. The server binds to loopback and requires its startup token for changes.
@@ -35,13 +35,15 @@ DECISION_MODEL=deepseek-flash
 DECISION_API_KEY=your-key
 ```
 
+The model-driven Agent and Inspector use the optional `agent` extra (`pip install "open-computer-use[agent]"` or `uv sync --extra agent`). Their public Python API is unchanged.
+
 The optional Jev backend answers structured choice heads instead of writing JSON. Set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot generate field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper, falling back to the decision backend settings. The product reads only user-configured environment variables.
 
 The chat backend supports JSON schema and JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behavior. No token logprobs are requested.
 
 ## From a coding agent
 
-A coding agent can be the decision model itself. `install.sh` compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. No decision backend or key is involved.
+The native CLI has no Python runtime dependencies and loads neither the model client nor the Inspector. A coding agent can be the decision model itself. `install.sh` compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. No decision backend or key is involved.
 
 ```sh
 open-computer-use observe Calculator        # header with fingerprint, then one element per line
@@ -67,7 +69,7 @@ with Agent("TextEdit", f"Replace the document with exactly '{sentence}'.", verif
     print(agent.state["verified"])
 ```
 
-`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim.
+`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim. `verified` checks the goal only; it does not certify the whole background interval. An optional `focus_check` callback connects the caller's existing full-task monitor: `True` means clear so far, `False` a recorded activation, and `None` unavailable. A violation or unavailable configured monitor stops before further input. The caller must keep monitoring through cleanup before accepting the task.
 
 Consequential operations are held at `risk >= 0.5`. Inspect the decision before calling `agent.approve_pending()`, or supply an `approve(decision)` callback. The rating shares the decision request; it is the same model's judgment, not an independent safety reviewer.
 
@@ -85,11 +87,15 @@ Consequential operations are held at `risk >= 0.5`. Inspect the decision before 
 
 There is one native executor. Activation flags, Codex-host execution, mouse input, dragging, screenshots and visual fallback have been removed. A canvas without usable accessibility controls is outside scope; it cannot be made a successful background task by taking the screen.
 
+Known `took_focus` facts stop the Agent, including facts returned with post-dispatch errors. CLI `act` returns `focus_violation` and exit code 3; this is never a retry instruction. Other exits are 0 for a delivered command, 1 for refusal/staleness, and 2 for uncertain or unconfirmed delivery. None establishes whole-task success.
+
 Native APIs can still cause app-specific side effects. `took_focus` records observed endpoint changes only. Full-run acceptance independently listens for macOS application-activation events, including a transient activation followed by a return to the original app. A run that changes the requested value but steals focus fails acceptance. Bringing the previous app back does not undo that failure.
 
 ## Delivery and identity
 
-Every result and bridge exception carries `disposition`:
+Every action result and bridge exception carries `disposition`. Action replies missing or contradicting it are protocol failures: the bridge is reset, the in-flight mutation remains uncertain, and no input is replayed. `AXBRIDGE_BIN` overrides must implement the current protocol.
+
+The delivery states are:
 
 | Delivery | Evidence | Retry |
 | --- | --- | --- |
@@ -110,7 +116,7 @@ Secure fields are classified before value reads; their values and descendants ar
 
 One app per run, including its accessible windows and open menus. Publication budgets and identity census limits are separate; incomplete observations are explicit. A run stops at 40 operations, 80 decisions, three consecutive unchanged operations, or before delivering the same action a third time on the same observed state. WAIT is exempt from repeat stopping. Existing history supplies the count; a stop is blocked, never task success. Observed state can hide real progress, and changing or unobserved state can evade this heuristic. Model task success varies independently of reliable execution.
 
-`examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
+`examples/calculator.py` delegates to the shared owned-instance acceptance runner; supply `--max-calls`, `--usage-file` and `--output` for your approved batch. Its optional `--goal` and `--expect` still customize the single task. `examples/textedit.py` edits an already-open disposable document and reports its goal reading only. An endpoint sample showing the app inactive is not proof it stayed inactive throughout. Focus acceptance requires the independent event record over the same task interval.
 
 [The background acceptance runner](evals/README.md) retains the 16 legacy task definitions, reads real app results independently and requires a complete activation-event record through cleanup. It preserves already-running user apps and records unavailable cases explicitly; historical scores are not current results.
 
