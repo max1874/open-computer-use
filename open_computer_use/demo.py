@@ -162,11 +162,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Local inspector for open-computer-use")
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="open-computer-use inspect", description="Local inspector for open-computer-use")
     parser.add_argument("--port", type=int, default=int(os.environ.get("OPEN_COMPUTER_USE_PORT", os.environ.get("JEV_CU_PORT", 8767))))
     parser.add_argument("--no-open", action="store_true")
-    options = parser.parse_args()
+    options = parser.parse_args(argv)
     server = HTTPServer(("127.0.0.1", options.port), Handler)
     url = f"http://127.0.0.1:{options.port}/"
     print(f"inspector on {url}")

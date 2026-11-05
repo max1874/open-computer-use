@@ -15,7 +15,7 @@ Requires macOS, Python 3.11+, Swift and Accessibility permission for the termina
 ```sh
 uv sync
 scripts/build.sh
-uv run --env-file .env open-computer-use --no-open
+uv run --env-file .env open-computer-use inspect --no-open
 ```
 
 Open the inspector at `http://127.0.0.1:8767`. It shows the observed element table, pending decision, risk and executed history. The server binds to loopback and requires its startup token for changes.
@@ -38,6 +38,18 @@ DECISION_API_KEY=your-key
 The optional Jev backend answers structured choice heads instead of writing JSON. Set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot generate field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper, falling back to the decision backend settings. The product reads only user-configured environment variables.
 
 The chat backend supports JSON schema and JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behavior. No token logprobs are requested.
+
+## From a coding agent
+
+A coding agent can be the decision model itself. `install.sh` compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. No decision backend or key is involved.
+
+```sh
+open-computer-use observe Calculator        # header with fingerprint, then one element per line
+open-computer-use act Calculator 3f9a1c2e7b10 PRESS e14
+open-computer-use act TextEdit 9ff54a0e5b69 TYPE_TEXT e1 --text 'Hello'
+```
+
+Each invocation starts its own bridge. `act` observes again and sends nothing unless the fingerprint still matches the observation the operation was chosen from, then executes through the same guards and prints the delivery outcome and the next observation.
 
 ## Python
 
@@ -112,6 +124,7 @@ One app per run, including its accessible windows and open menus. Publication bu
 | `actions.py` | Observed action table and answer schema |
 | `model.py` | Decision backends and field-value helper |
 | `agent.py` | Prediction, risk approval, once-only execution and history |
+| `cli.py` | `observe` / `act` for an agent acting as the decision model |
 | `demo.py` | Local inspector |
 
 Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). See [design](docs/design.md) and [remaining boundaries](todo.md).

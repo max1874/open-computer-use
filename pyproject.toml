@@ -11,7 +11,7 @@ dependencies = ["httpx[http2]>=0.28,<1"]
 Homepage = "https://github.com/max1874/open-computer-use"
 
 [project.scripts]
-open-computer-use = "open_computer_use.demo:main"
+open-computer-use = "open_computer_use.cli:main"
 
 [build-system]
 requires = ["hatchling"]
