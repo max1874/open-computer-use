@@ -456,6 +456,12 @@ func label(of element: AXUIElement, role: String) -> String {
             return text
         }
     }
+    if role == kAXScrollAreaRole, !secureField(element) {
+        for child in children(element) where [kAXOutlineRole, kAXTableRole, kAXListRole].contains(string(child, kAXRoleAttribute)) {
+            let name = string(child, kAXDescriptionAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { return name }
+        }
+    }
     if role != kAXStaticTextRole {
         let spoken = containedText(element)
         if !spoken.isEmpty { return spoken }
@@ -509,11 +515,38 @@ func popupOptions(_ element: AXUIElement, index: String) -> [[String: Any]] {
     return out
 }
 
+/// Scroll the observed area's native page controls. Area-level scroll actions
+/// can be advertised but unimplemented, and content bounds can be clipped.
+func scrollControls(_ area: AXUIElement) -> (bar: AXUIElement, position: Double, buttons: [String: AXUIElement])? {
+    guard !secureField(area) else { return nil }
+    let bars = children(area).filter {
+        string($0, kAXRoleAttribute) == kAXScrollBarRole
+            && string($0, kAXOrientationAttribute) == "AXVerticalOrientation"
+    }
+    guard bars.count == 1, let bar = bars.first, !secureField(bar),
+          let value = attr(bar, kAXValueAttribute) as? NSNumber else { return nil }
+    let position = value.doubleValue
+    guard position.isFinite, (0...1).contains(position) else { return nil }
+    var buttons: [String: AXUIElement] = [:]
+    for child in children(bar) where string(child, kAXRoleAttribute) == kAXButtonRole {
+        guard bool(child, kAXEnabledAttribute) ?? true, actionNames(child).contains(kAXPressAction) else { continue }
+        switch string(child, kAXSubroleAttribute) {
+        case "AXIncrementPage" where position < 1: buttons["SCROLL_DOWN"] = child
+        case "AXDecrementPage" where position > 0: buttons["SCROLL_UP"] = child
+        default: break
+        }
+    }
+    return (bar, position, buttons)
+}
+
 func operations(for element: AXUIElement, role: String, surface: AXUIElement?, enabled: Bool, named: Bool = false) -> [String] {
     guard enabled else { return [] }
     if !filename(of: element, role: role).isEmpty { return ["CLICK"] }
     var out: [String] = []
     let available = Set(actionNames(element))
+    if role == kAXScrollAreaRole {
+        if let controls = scrollControls(element) { out += controls.buttons.keys.sorted() }
+    }
     if available.contains(kAXPressAction), role != kAXPopUpButtonRole, role != "AXMenuButton" {
         out.append("PRESS")
     }
@@ -954,33 +987,6 @@ func describe(_ error: AXError) -> String {
     return "\(names[error] ?? "AXError") (\(error.rawValue))"
 }
 
-func scroll(_ element: AXUIElement, pid: pid_t, amount: Int) throws {
-    let rect = frame(element)
-    guard rect.width > 0, rect.height > 0 else { throw BridgeError(message: "nothing scrollable is visible") }
-    guard let event = CGEvent(
-        scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(amount), wheel2: 0, wheel3: 0)
-    else { throw BridgeError(message: "could not build a scroll event") }
-    event.location = CGPoint(x: rect.midX, y: rect.midY)
-    try requireReadable()
-    try post(event, pid: pid)
-}
-
-/// Find the scroll area covering the largest part of the window.
-func mainScrollArea(_ window: AXUIElement) -> AXUIElement? {
-    var best: (AXUIElement, CGFloat)?
-    func visit(_ element: AXUIElement, depth: Int) {
-        guard depth < 12, axReadFailure == nil else { return }
-        if string(element, kAXRoleAttribute) == kAXScrollAreaRole {
-            let rect = frame(element)
-            let area = rect.width * rect.height
-            if area > (best?.1 ?? 0) { best = (element, area) }
-        }
-        for child in children(element) { visit(child, depth: depth + 1) }
-    }
-    visit(window, depth: 0)
-    return best?.0
-}
-
 let keyCodes: [String: CGKeyCode] = [
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13,
     "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25,
@@ -1175,17 +1181,6 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
         try pressKey(combo, pid: pid)
         return ["ok": true, "detail": "key \(combo)", "mechanism": "CGEvent→pid"]
     }
-    if op == "SCROLL_UP" || op == "SCROLL_DOWN" {
-        let root = appElement(app)
-        let focused = (attr(root, kAXFocusedWindowAttribute)).map { $0 as! AXUIElement }
-            ?? children(root).first(where: { string($0, kAXRoleAttribute) == kAXWindowRole })
-        guard let window = focused, let area = mainScrollArea(window) ?? focused else {
-            throw BridgeError(message: "no scrollable area found")
-        }
-        try scroll(area, pid: pid, amount: op == "SCROLL_UP" ? 240 : -240)
-        return ["ok": true, "detail": op.lowercased(), "mechanism": "CGEvent→pid"]
-    }
-
     guard let path = request["path"] as? String else { throw BridgeError(message: "\(op) needs an element path") }
     let target = try observedTarget(request, app: app)
     let element = target.element
@@ -1241,6 +1236,15 @@ func executeAction(_ request: [String: Any], app: NSRunningApplication, op: Stri
     try requireReadable()
 
     switch op {
+    case "SCROLL_UP", "SCROLL_DOWN":
+        guard string(element, kAXRoleAttribute) == kAXScrollAreaRole,
+              let controls = scrollControls(element), let button = controls.buttons[op] else {
+            throw BridgeError(message: "the observed area has no native page control for this direction")
+        }
+        try perform(button, kAXPressAction)
+        let actual = (attr(controls.bar, kAXValueAttribute) as? NSNumber)?.doubleValue
+        return ["detail": current, "mechanism": "AXPress(scrollbar page)",
+                "verified": actual.map { $0 != controls.position } ?? false]
     case "PRESS":
         let role = string(element, kAXRoleAttribute)
         guard role != kAXPopUpButtonRole, role != "AXMenuButton" else {

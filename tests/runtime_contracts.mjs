@@ -38,3 +38,19 @@ test('editing requires a window editor at publication and delivery', () => {
   assert.match(execute, /!textEditor\(element, role: string\(element, kAXRoleAttribute\), surface: target.surface\)/);
   assert.match(execute, /throw BridgeError\(message: "target is not a supported window text editor"\)/);
 });
+
+test('scrolling uses a proven observed area and native vertical page controls', () => {
+  const execute = source.slice(source.indexOf('func executeAction('));
+  const scroll = execute.slice(execute.indexOf('    case "SCROLL_UP", "SCROLL_DOWN":'), execute.indexOf('    case "PRESS":'));
+  assert.ok(execute.indexOf('try observedTarget(request, app: app)') < execute.indexOf('    case "SCROLL_UP", "SCROLL_DOWN":'));
+  assert.match(scroll, /kAXScrollAreaRole/);
+  assert.match(scroll, /scrollControls\(element\)/);
+  assert.match(scroll, /perform\(button, kAXPressAction\)/);
+  assert.doesNotMatch(source, /mainScrollArea|scrollWheelEvent/);
+  const bar = source.slice(source.indexOf('func scrollControls('), source.indexOf('func operations('));
+  assert.match(bar, /AXIncrementPage/);
+  assert.match(bar, /AXDecrementPage/);
+  assert.match(bar, /guard !secureField\(area\) else \{ return nil \}/);
+  assert.ok(bar.indexOf('guard !secureField(area)') < bar.indexOf('children(area)'));
+  assert.match(source, /if role == kAXScrollAreaRole, !secureField\(element\) \{/);
+});

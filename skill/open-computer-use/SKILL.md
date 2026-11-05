@@ -50,7 +50,7 @@ The target app must be running. Start one without bringing it forward with
    open-computer-use act <app> <fingerprint> SELECT e9:2
    open-computer-use act <app> <fingerprint> KEY_CHORD e4 --key cmd+a
    open-computer-use act <app> <fingerprint> MENU m3
-   open-computer-use act <app> <fingerprint> SCROLL_DOWN
+   open-computer-use act <app> <fingerprint> SCROLL_DOWN e2
    ```
    The first output line says what happened; the rest is the new table.
 3. **Verify** from that table: the value, checked state, selection or window
@@ -66,7 +66,8 @@ The target app must be running. Start one without bringing it forward with
 | `SELECT` | pick an option of a pop-up button; targets are the `options` keys |
 | `CLICK` | select a row through the app's native selection API |
 | `MENU` | run a menu-bar command; offered only while the app is already active |
-| `SCROLL_UP` / `SCROLL_DOWN`, `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT` | targetless controls |
+| `SCROLL_UP` / `SCROLL_DOWN` | scroll an observed scroll-area target by one native page |
+| `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT` | targetless controls |
 
 An operation is offered only on elements whose identity the bridge could prove;
 an element listed with `"identity_proven": false` cannot be acted on.

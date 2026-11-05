@@ -59,6 +59,34 @@ class DecisionContracts(unittest.TestCase):
         _, targets, _ = action_space(self.page)
         self.assertEqual(targets["CLICK"]["e1"]["op"], "CLICK")
 
+    def test_scroll_choices_keep_containers_and_bind_the_selected_area(self):
+        self.page["elements"] = [
+            {"index": "1", "path": "0.sidebar", "role": "AXScrollArea", "label": "Sidebar",
+             "frame": [0, 0, 200, 500], "operations": ["SCROLL_DOWN"]},
+            {"index": "2", "path": "0.detail", "role": "AXScrollArea", "label": "Document",
+             "frame": [200, 0, 600, 500], "operations": ["SCROLL_UP", "SCROLL_DOWN"]},
+            {"index": "3", "path": "0.sidebar.0", "role": "AXStaticText", "label": "Sidebar",
+             "frame": [0, 0, 200, 30], "operations": ["CLICK"]}]
+        self.page["background_clicks"] = ["3"]
+        _, targets, controls = action_space(self.page)
+        self.assertEqual(set(targets["SCROLL_DOWN"]), {"e1", "e2"})
+        self.assertNotIn("SCROLL_DOWN", controls)
+        self.assertNotIn("SCROLL_UP", controls)
+        decision = self.decide({"operation": "SCROLL_DOWN", "scroll_down_target": "e1"})
+        self.assertEqual(decision["action"]["path"], "0.sidebar")
+        self.assertEqual(decision["action"]["expect_role"], "AXScrollArea")
+        with self.assertRaises(ValueError):
+            self.decide({"operation": "SCROLL_DOWN", "scroll_down_target": "e3"})
+        with self.assertRaises(ValueError):
+            self.decide({"operation": "SCROLL_UP", "scroll_up_target": "e1"})
+
+    def test_scroll_is_absent_without_an_observed_scroll_capability(self):
+        _, targets, controls = action_space(self.page)
+        self.assertNotIn("SCROLL_DOWN", targets)
+        self.assertNotIn("SCROLL_DOWN", controls)
+        with self.assertRaises(ValueError):
+            self.decide({"operation": "SCROLL_DOWN"})
+
     def test_unoffered_shortcut_is_refused(self):
         with self.assertRaises(ValueError):
             self.decide({"operation": "KEY_CHORD", "key_chord_target": "e1", "key_chord_key": "cmd+q"})
