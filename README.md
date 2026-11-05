@@ -18,16 +18,18 @@ Most computer-use agents look at the screen and move the mouse, so the Mac is th
 ## How it fits together
 
 ```text
-                     the app (stays in the background)
-                       │  accessibility tree         ▲  AXPress · AXValue · keys to its pid
-                       ▼                             │
- axbridge (Swift) ── observe ──► indexed table ──► guarded act ──► observe again
-                                     │                  ▲
-                                     ▼                  │
-                     a decision: one operation, one observed target
-                     ├─ a coding agent through `open-computer-use observe / act`
-                     └─ the built-in Agent: one model request per step
+ the app, left in the background
+   │ accessibility tree             ▲ AXPress · AXValue · keys to its pid
+   ▼                                │
+ observe ──► indexed table ──► guarded act ──► observe again
+                   │                ▲
+                   ▼                │
+   decision: one operation on one observed target
+   ├─ a coding agent:     open-computer-use observe / act
+   └─ the built-in Agent: one model request per step
 ```
+
+`axbridge` (Swift) does both ends: it reads the tree and executes the guarded operation.
 
 Requires macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/), the Swift toolchain (Xcode Command Line Tools), and Accessibility permission for the app that launches the bridge (your terminal, or the agent's host app). Screen Recording is not used.
 
