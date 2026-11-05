@@ -31,6 +31,7 @@ def serialise(agent):
     decision = state.get("decision")
     return {
         "status": state["status"],
+        "note": state.get("note"),
         "app": state["app"],
         "goal": state["goal"],
         "window": state["window"],
@@ -164,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="open-computer-use inspect", description="Local inspector for open-computer-use")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("OPEN_COMPUTER_USE_PORT", os.environ.get("JEV_CU_PORT", 8767))))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("OPEN_COMPUTER_USE_PORT", 8767)))
     parser.add_argument("--no-open", action="store_true")
     options = parser.parse_args(argv)
     server = HTTPServer(("127.0.0.1", options.port), Handler)

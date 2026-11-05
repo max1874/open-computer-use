@@ -1,5 +1,6 @@
 """Real model tasks, independent result readings, and lifetime-wide focus events."""
 import argparse
+from dataclasses import replace
 import json
 import queue
 import subprocess
@@ -67,6 +68,12 @@ class Lease:
             if event["event"] in {"unavailable", "error", "eof"}:
                 raise RuntimeError(event.get("detail", "Ownership monitor ended before acquiring an instance"))
 
+    def focus_clear(self):
+        if (not self.events or self.events[0]["event"] != "ready" or self.process.poll() is not None
+                or any(e["event"] == "error" for e in self.events)):
+            return None
+        return not any(e["event"] == "activated" for e in self.events)
+
     def close(self):
         self.process.stdin.close()
         # The native owner closes only what it created, before its stopped event.
@@ -128,7 +135,7 @@ def run_once(task, binary, directory, max_decisions):
         if record["before"] is not False:
             raise RuntimeError("The initial result check was not false after setup")
         phase("agent")
-        with Agent(str(pid), task.goal, menus=False, risk_threshold=0,
+        with Agent(str(pid), task.goal, menus=False, risk_threshold=0, focus_check=lease.focus_clear,
                    approve=lambda d: task.app != "System Settings" or d["operation"] in {
                        "CLICK", "SCROLL_UP", "SCROLL_DOWN", "WAIT", "PRESS_ESCAPE"}) as agent:
             try:
@@ -177,11 +184,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", nargs="+", choices=[t.id for t in TASKS], required=True)
     parser.add_argument("--reps", type=int, default=1)
+    parser.add_argument("--goal", help="Override the goal for a single selected task")
+    parser.add_argument("--expect", help="Override its independent expected result")
     parser.add_argument("--max-decisions", type=int, default=16)
     parser.add_argument("--max-calls", type=int, required=True, help="Approved total batch cap, including prior stages")
     parser.add_argument("--usage-file", type=Path, required=True, help="Shared cumulative batch counter; run one writer at a time")
     parser.add_argument("--output", type=Path, required=True, help="New artifact directory outside the checkout")
     options = parser.parse_args()
+    if (options.goal is not None or options.expect is not None) and len(options.tasks) != 1:
+        parser.error("Goal/result overrides require exactly one task")
     if min(options.reps, options.max_calls, options.max_decisions) < 1:
         parser.error("Budgets and repetitions must be positive")
     root = Path(__file__).resolve().parents[1]
@@ -202,6 +213,8 @@ def main():
                         continue
                     if budget.data["calls"] >= options.max_calls:
                         return
+                    task = replace(task, goal=options.goal if options.goal is not None else task.goal,
+                                   expected=options.expect if options.expect is not None else task.expected)
                     record = run_once(task, binary, output / f"{rep + 1:02d}-{task.id}", options.max_decisions)
                     stream.write(json.dumps(record, ensure_ascii=False) + "\n"); stream.flush()
                     print(json.dumps({k: record[k] for k in ("task", "passed", "status", "before", "after", "monitor_complete", "cleaned", "focus", "error")}), flush=True)

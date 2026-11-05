@@ -9,8 +9,8 @@ async function api(path, body) {
     : {};
   const response = await fetch(path, options);
   const payload = await response.json();
-  if (payload.error) banner(payload.error);
-  else banner(null);
+  banner(payload.error || payload.note || (payload.status === "done"
+    ? "The model finished. Full-run background acceptance is unverified here." : null));
   return payload;
 }
 
@@ -114,7 +114,7 @@ function render(state) {
   renderElements(state);
   renderDecision(state);
   renderHistory(state);
-  $("status").textContent = state.status;
+  $("status").textContent = state.status === "done" ? "Model finished" : state.status;
   $("status").className = "pill " + state.status;
   $("elapsed").textContent = state.elapsed_ms ? `${state.elapsed_ms} ms elapsed` : "";
   const live = !["idle", "done", "blocked"].includes(state.status);

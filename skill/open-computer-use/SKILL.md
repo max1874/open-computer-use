@@ -54,7 +54,7 @@ The target app must be running. Start one without bringing it forward with
    ```
    The first output line says what happened; the rest is the new table.
 3. **Verify** from that table: the value, checked state, selection or window
-   you intended. A delivered operation is not a finished task.
+   you intended. A delivered operation is not a finished task. `active: false` and `took_focus: false` are endpoint samples, not proof about the complete task interval. Whole-task acceptance needs an independent result reading and continuous activation events from setup through cleanup.
 
 | Operation | Does |
 |---|---|
@@ -83,7 +83,7 @@ an element listed with `"identity_proven": false` cannot be acted on.
   value back, `delivered_unverified` otherwise.
 - `unknown` or `executed, unconfirmed` (exit code 2): input may have landed.
   Never send it again blind; read the table and decide from what is there.
-- `took_focus: true` means the app came forward. That breaks the background
+- `focus_violation` (exit code 3) preserves the delivery outcome but requires stopping; do not retry it. `took_focus: true` means the app came forward. That breaks the background
   promise: stop and tell the user.
 
 ## Ask before

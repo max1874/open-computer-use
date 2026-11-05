@@ -11,7 +11,12 @@ import math
 import os
 import time
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError as error:
+    if error.name != "httpx":
+        raise
+    raise RuntimeError("The model-driven Agent needs the optional dependencies: install open-computer-use[agent].") from None
 
 from .actions import (
     action_space, head_properties, object_format_instructions,

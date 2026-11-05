@@ -150,3 +150,47 @@ class AgentContracts(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertEqual(len(result["history"]), 4)
             self.desktop.act.assert_not_called()
+
+    def test_focus_violation_stops_even_when_the_app_can_still_be_read(self):
+        self.desktop.act.return_value["took_focus"] = True
+        verify = Mock(return_value=True)
+        with Agent("Scratch", "Edit message", verify=verify) as agent:
+            states = list(agent.run())
+            self.assertEqual(len(states), 1)
+            self.assertEqual(states[0]["status"], "blocked")
+            self.assertTrue(states[0]["took_focus"])
+            self.assertIsNone(states[0]["verified"])
+            self.assertEqual(states[0]["history"][0]["disposition"], disposition("delivered_unverified"))
+            self.assertIn("focus", states[0]["note"])
+            self.desktop.act.assert_called_once()
+            verify.assert_not_called()
+
+    def test_a_post_dispatch_error_keeps_its_focus_violation(self):
+        error = UnknownOutcome("reply unconfirmed")
+        error.took_focus = True
+        self.desktop.act.side_effect = error
+        with Agent("Scratch", "Edit message") as agent:
+            result = agent.command("tick")
+            self.assertEqual(result["status"], "blocked")
+            self.assertTrue(result["took_focus"])
+            self.assertTrue(result["history"][0]["took_focus"])
+            self.assertEqual(result["history"][0]["disposition"], disposition("delivery_uncertain"))
+            self.desktop.act.assert_called_once()
+
+    def test_an_activation_during_prediction_refuses_input(self):
+        monitor = Mock(side_effect=[True, False, False])
+        with Agent("Scratch", "Edit message", focus_check=monitor) as agent:
+            result = agent.command("tick")
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual(result["history"][0]["disposition"], disposition("not_delivered"))
+            self.assertFalse(result["took_focus"])
+            self.desktop.act.assert_not_called()
+
+    def test_a_missing_monitor_cannot_silently_become_clear(self):
+        with Agent("Scratch", "Edit message", focus_check=lambda: None) as agent:
+            with patch("open_computer_use.agent.choose") as choose:
+                result = agent.command("tick")
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual(result["history"], [])
+            choose.assert_not_called()
+            self.desktop.act.assert_not_called()

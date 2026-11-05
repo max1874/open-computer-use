@@ -117,6 +117,7 @@ class Bridge:
         return line
 
     def call(self, method, timeout=20, mutating=False, **body):
+        mutating = mutating or method == "act"
         with self.lock:
             if self.closed:
                 raise BridgeError("the accessibility bridge is closed")
@@ -136,7 +137,7 @@ class Bridge:
                     raise OSError("incomplete request write")
                 self.process.stdin.flush()
                 answer = json.loads(self._readline(timeout))
-                if not isinstance(answer, dict) or answer.get("id") != request["id"]:
+                if not isinstance(answer, dict) or type(answer.get("id")) is not int or answer["id"] != request["id"]:
                     raise ValueError("the reply does not match the request")
                 if not isinstance(answer.get("ok"), bool):
                     raise ValueError("the reply has no outcome")
@@ -144,12 +145,12 @@ class Bridge:
                     raise ValueError("the reply has no result")
                 envelope = answer if not answer["ok"] else answer["result"]
                 reported = envelope.get("disposition")
-                if "disposition" in envelope and (
-                    not isinstance(reported, dict) or reported.get("delivery") not in {
+                if mutating or "disposition" in envelope:
+                    delivery = reported.get("delivery") if isinstance(reported, dict) else None
+                    if (not isinstance(delivery, str) or delivery not in {
                         "not_delivered", "delivery_uncertain", "delivered_unverified", "delivered_verified"
-                    }
-                ):
-                    raise ValueError("the reply has an invalid delivery outcome")
+                    } or reported != disposition(delivery)):
+                        raise ValueError("the reply has no valid delivery disposition; rebuild the bridge")
             except (OSError, EOFError, TimeoutError, ValueError) as error:
                 self._stop()
                 failure = UnknownOutcome if mutating else BridgeError
@@ -160,18 +161,12 @@ class Bridge:
             if not answer["ok"]:
                 message = answer.get("error", "unknown bridge error")
                 delivery = answer.get("disposition", {}).get("delivery")
-                if delivery == "delivery_uncertain":
-                    raise UnknownOutcome(message)
-                if delivery == "delivered_unverified" or answer.get("acted"):
-                    raise Executed(message)
-                raise BridgeError(message)
-            result = answer["result"]
-            if mutating:
-                # Older AXBRIDGE_BIN overrides have no structured delivery field.
-                result.setdefault("disposition", disposition(
-                    "delivered_verified" if result.get("verified") is True else "delivered_unverified"
-                ))
-            return result
+                failure = (UnknownOutcome if delivery == "delivery_uncertain" else
+                           Executed if delivery in {"delivered_unverified", "delivered_verified"} else BridgeError)
+                error = failure(message)
+                error.took_focus = answer.get("took_focus") is True
+                raise error
+            return answer["result"]
 
     def close(self):
         with self.lock:
@@ -189,9 +184,6 @@ SETTLE_MS = {
     "MENU": 220,
     "SELECT": 220,
     "PRESS": 60,
-    # Stepping a control is the app changing its own value, done immediately.
-    "INCREMENT": 60,
-    "DECREMENT": 60,
     "TYPE_TEXT": 25,
     "PASTE_TEXT": 40,
     "KEY_CHORD": 80,

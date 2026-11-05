@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 
 [[package]]
@@ -110,20 +110,27 @@ wheels = [
 name = "open-computer-use"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+agent = [
     { name = "httpx", extra = ["http2"] },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "open-computer-use", extra = ["agent"] },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx", extras = ["http2"], specifier = ">=0.28,<1" }]
+requires-dist = [{ name = "httpx", extras = ["http2"], marker = "extra == 'agent'", specifier = ">=0.28,<1" }]
+provides-extras = ["agent"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.14,<1" }]
+dev = [
+    { name = "open-computer-use", extras = ["agent"] },
+    { name = "ruff", specifier = ">=0.14,<1" },
+]
 
 [[package]]
 name = "ruff"

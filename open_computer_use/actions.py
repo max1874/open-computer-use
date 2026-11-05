@@ -23,14 +23,7 @@ TARGETED = {
     "SELECT": "Choose a value from a pop-up button's menu.",
     "MENU": "Run a menu-bar command by name, without opening the menu first.",
     "CLICK": "Select an observed row through the app's native selection API.",
-    # INCREMENT and DECREMENT are deliberately absent. The bridge derives and
-    # executes both, and adding them here is one line — it was added, measured,
-    # and taken out again. Calculator publishes them on "Show Sidebar" and
-    # "Mode", so offering them put two more heads in every answer and two more
-    # ways to be wrong in a task that needs neither. On "compute 12 times 34",
-    # against deepseek-flash: 6 of 6 runs correct in 6 operations without them,
-    # 1 of 8 with them, the rest wandering into the 40-operation budget. The
-    # element table was identical in both. See "What is not offered".
+
 }
 
 

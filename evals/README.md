@@ -5,7 +5,7 @@ The 16 task goals and result checks come from the legacy evals branch. Its scrip
 Approve a usage-billed batch before running it. Select tasks explicitly and run only one writer for a shared usage file:
 
 ```sh
-uv run --env-file .env python -m evals.run \
+uv run --extra agent --env-file .env python -m evals.run \
   --tasks calc-multiply textedit-edit --reps 1 \
   --max-calls 20 --usage-file /absolute/path/batch.json \
   --output /absolute/path/new-acceptance-folder
@@ -18,6 +18,7 @@ A pass requires all of the following:
 - The independent app check is false after setup and true after the real Agent run. No expected answer is injected by a scripted solve. Calculator reads its display, TextEdit its document, Settings its pane title (or a recognized detail heading while the title is unavailable), Safari its window title, and Dictionary its definition text. Finder reads the exact owned window's target directory, so row selection cannot satisfy opening a folder.
 - System Settings navigation tasks hold operations other than native row selection, scrolling, waiting and Escape, using the existing approval callback; they never approve unrelated preference changes.
 - The Agent ended with `done`. `DONE` with a false reading is recorded separately as `false_done`.
+- The same observer supplies `Agent.focus_check`, so an activation during model prediction or field-value preparation can withhold the next input. An unavailable configured monitor also stops.
 - The activation-event observer started before app setup and ended after cleanup. **Any activation event invalidates this run**, including during cleanup. An unrelated human app switch is conservatively inconclusive; the runner does not label it task-caused or silently exclude it. It never restores foreground focus.
 - The owned instance/window was confirmed closed. Missing observer endpoints, native errors and cleanup failures invalidate acceptance.
 
