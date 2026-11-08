@@ -92,5 +92,8 @@ Signing in or changing account state, submitting personal or payment data,
 granting permissions, sending messages, mail or posts, deleting or overwriting
 anything this task did not create, installing software, and any press whose
 effect you cannot read back. Never type a secret through `--text`: it lands in
-the transcript. Reversible toggles (a sidebar, a zoom level) are fine to try
-and restore.
+the transcript. Only the app this task opened is yours to change. Anything
+that changes the whole Mac (System Settings, appearance, sound, network)
+needs the user's yes for that change, every time, even when you mean to
+restore it: in System Settings `act` refuses everything but navigation until
+you pass `--machine-wide`, and you pass it only after that yes.

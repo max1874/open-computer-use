@@ -192,10 +192,18 @@ SETTLE_MS = {
 }
 
 
+# Apps whose controls change the whole Mac rather than one app's window.
+# Navigating them changes nothing; anything else needs the user's yes, which
+# the caller states with machine_wide=True. On 2026-11-08 an agent switched
+# its user's appearance to Light here for a README demo, unasked.
+MACHINE_WIDE = {"com.apple.systempreferences"}
+NAVIGATION = {"CLICK", "SCROLL_UP", "SCROLL_DOWN", "PRESS_ESCAPE", "WAIT"}
+
+
 class Desktop:
     """One app, observed as an indexed element table and driven by path."""
 
-    def __init__(self, app, *, menus=True, limit=250):
+    def __init__(self, app, *, menus=True, limit=250, machine_wide=False):
         self.bridge = Bridge()
         status = self.bridge.call("status")
         if not status["accessibility"]:
@@ -211,6 +219,7 @@ class Desktop:
         self.instance = None
         self.menus = menus
         self.limit = limit
+        self.machine_wide = machine_wide
 
     def observe(self):
         page = self.bridge.call("snapshot", app=self.app, menus=self.menus, limit=self.limit,
@@ -234,6 +243,9 @@ class Desktop:
     def act(self, action, page, text=None):
         """Execute one chosen action. A refused guard raises; nothing runs twice."""
         operation = action["operation"]
+        if page.get("bundle") in MACHINE_WIDE and operation not in NAVIGATION and not self.machine_wide:
+            raise BridgeError(f"{operation} in {page.get('app')} changes the whole Mac, not one app. "
+                              "Nothing was sent. Ask the user first, then allow machine-wide changes.")
         request = {"app": self.app, "op": action.get("op", operation),
                    "process_instance": page.get("process_instance"), "observation": page.get("observation")}
         if "path" in action:
