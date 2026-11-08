@@ -32,7 +32,8 @@ class CLIContracts(unittest.TestCase):
                     error = UnknownOutcome("post-action reply unavailable")
                     error.took_focus = True
                     desktop.act.side_effect = error
-                options = SimpleNamespace(app="Scratch", fingerprint="observation", operation="PRESS", text=None)
+                options = SimpleNamespace(app="Scratch", fingerprint="observation", operation="PRESS", text=None,
+                                          machine_wide=False)
                 output = io.StringIO()
                 with patch("open_computer_use.cli.Desktop", return_value=desktop), patch(
                     "open_computer_use.cli.resolve", return_value={"label": "Continue"}
