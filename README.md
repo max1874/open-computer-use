@@ -3,7 +3,9 @@
 **Agents use your Mac's apps in the background, while you keep using yours.**
 No screenshots, no pointer, no app brought to the front.
 
-<a href="https://max1874.com/open-computer-use/"><img src="docs/demo.en.gif" width="800" alt="Calculator computing 12 × 34 behind another app"></a>
+<img src="docs/demo.gif" width="800" alt="An agent reads System Settings as an indexed control table while an editor stays in front, then presses Light: delivered, took_focus false">
+
+<sub>Replayed from one real <code>observe</code> and <code>act</code> on System Settings › Appearance. Indices, labels, states and results are the tool's own output; the window geometry is drawn. The run predates the <code>--machine-wide</code> gate below.</sub>
 
 Most computer-use agents look at the screen and move the mouse, so the Mac is theirs while they work. open-computer-use reads an app through the macOS accessibility tree instead, turns it into a numbered table of the controls the app actually exposes, and acts on one of them through a native bridge that never activates the app.
 
@@ -52,15 +54,14 @@ $ open-computer-use status
 The loop is observe, act, read back:
 
 ```console
-$ open -g -a Calculator                     # launch without bringing it forward
-$ open-computer-use observe Calculator
-{"app": "Calculator", "window": "Calculator", "active": false, "fingerprint": "f793449f2824", "controls": [...]}
-{"index": "e14", "role": "Button", "label": "1", "operations": ["PRESS"]}
-{"index": "e15", "role": "Button", "label": "2", "operations": ["PRESS"]}
+$ open -g -a TextEdit note.txt              # launch without bringing it forward
+$ open-computer-use observe TextEdit
+{"app": "TextEdit", "window": "note.txt", "active": false, "fingerprint": "9ff54a0e5b69", "controls": [...]}
+{"index": "e1", "role": "TextArea", "operations": ["TYPE_TEXT", "PASTE_TEXT", "KEY_CHORD", "SELECT_TEXT"], "value": "draft\n", "selection": [0, 0]}
 ...
-$ open-computer-use act Calculator f793449f2824 PRESS e14
-{"operation": "PRESS", "label": "1", "outcome": "delivered", "delivery": "delivered_unverified", "took_focus": false, ...}
-{"app": "Calculator", "window": "Calculator", "active": false, "fingerprint": "…", ...}
+$ open-computer-use act TextEdit 9ff54a0e5b69 TYPE_TEXT e1 --text '后台写入，没抢焦点。'
+{"operation": "TYPE_TEXT", "label": "TextArea", "outcome": "delivered", "delivery": "delivered_verified", "verified": true, "took_focus": false, "mechanism": "AXValue", ...}
+{"app": "TextEdit", "window": "note.txt", "active": false, "fingerprint": "a8330d0065a4", ...}
 ```
 
 `act` starts a fresh bridge, observes again and sends nothing unless the fingerprint still matches the observation the operation was chosen from. It then executes through the same guards and prints the outcome followed by the next observation. Text goes in with `--text`, keys with `--key`, selections with `--start` and `--length`; `observe --text` adds the window's visible text.
@@ -132,6 +133,8 @@ Operations rated `risk >= 0.5` are held. Inspect the decision before calling `ag
 | `SCROLL_UP` / `SCROLL_DOWN` | Page an observed scroll area, such as a sidebar or document, through its native scroll bar's page control |
 | `PRESS_RETURN`, `PRESS_ESCAPE`, `WAIT` | Targetless controls |
 | `DONE`, `BLOCKED` | Built-in agent only: the model's verdict |
+
+**System Settings changes the whole Mac, not one app**, so only navigation (`CLICK`, scrolling, `PRESS_ESCAPE`, `WAIT`) runs there by default. Anything else is refused before dispatch as `not_delivered` until the caller passes `--machine-wide` (`machine_wide=True` in Python), which states that the user agreed to that change.
 
 File names identified by `AXFilename` offer selection only, never editing or renaming; other editable table cells keep their editing operations. There is one native executor: activation flags, host-specific execution, mouse input, dragging, screenshots and visual fallback have all been removed. A canvas without usable accessibility controls is out of scope, and cannot be made a background task by taking the screen.
 
