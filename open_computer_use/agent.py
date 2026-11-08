@@ -64,6 +64,8 @@ class Agent:
     `needs_approval` and hands the decision back, rather than acting.
 
     The native bridge works without activating the app or moving the pointer.
+    In System Settings only navigation runs unless `machine_wide=True`: its
+    other controls change the whole Mac, which is the user's call.
     """
 
     def __init__(
@@ -76,6 +78,7 @@ class Agent:
         menus=True,
         verify=None,
         focus_check=None,
+        machine_wide=False,
     ):
         goal = goal.strip() if isinstance(goal, str) else "\n".join(goal).strip()
         if not goal:
@@ -96,7 +99,7 @@ class Agent:
         self.refused = set()
         # Consecutive decisions refused because the window moved under them.
         self.stale = 0
-        self.desktop = Desktop(app, menus=menus)
+        self.desktop = Desktop(app, menus=menus, machine_wide=machine_wide)
         try:
             page = self.desktop.observe()
         except Exception:

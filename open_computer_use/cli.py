@@ -75,7 +75,7 @@ def resolve(page, options):
 
 
 def act(options):
-    with closing(Desktop(options.app)) as desktop:
+    with closing(Desktop(options.app, machine_wide=options.machine_wide)) as desktop:
         page = desktop.observe()
         if len(options.fingerprint) < 8 or not page["fingerprint"].startswith(options.fingerprint):
             emit({"outcome": "stale", "delivery": "not_delivered",
@@ -136,6 +136,8 @@ def main(argv=None):
     run.add_argument("--key", help="KEY_CHORD key")
     run.add_argument("--start", type=int, help="SELECT_TEXT UTF-16 offset")
     run.add_argument("--length", type=int, help="SELECT_TEXT UTF-16 length")
+    run.add_argument("--machine-wide", action="store_true",
+                     help="allow a change to the whole Mac (System Settings); only after the user said yes")
     commands.add_parser("inspect", help="the local inspector for the built-in agent", add_help=False)
     options, rest = parser.parse_known_args(argv)
     if rest and options.command != "inspect":
