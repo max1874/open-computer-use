@@ -35,7 +35,7 @@ Requires macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/), the Swift toolch
 
 ## Drive it from a coding agent
 
-Claude Code, Codex or any agent with a shell can be the decision model itself. No model backend or API key is involved.
+Claude Code, Codex or any agent with a shell can be the decision model itself. No model backend or API key is involved, and the CLI has no Python runtime dependencies.
 
 ```sh
 git clone https://github.com/max1874/open-computer-use.git
@@ -65,13 +65,15 @@ $ open-computer-use act Calculator f793449f2824 PRESS e14
 
 `act` starts a fresh bridge, observes again and sends nothing unless the fingerprint still matches the observation the operation was chosen from. It then executes through the same guards and prints the outcome followed by the next observation. Text goes in with `--text`, keys with `--key`, selections with `--start` and `--length`; `observe --text` adds the window's visible text.
 
+Exit codes: `0` delivered, `1` refused or stale (nothing sent), `2` uncertain or unconfirmed delivery (read the window, never resend blind), `3` `focus_violation` (the app came forward: stop). None of them establishes that the whole task succeeded.
+
 ## Or give the built-in agent a goal
 
 One app, one natural-language goal. Each step is one model request that chooses the operation, its observed target, any text to enter and a risk rating.
 
 ```sh
-uv sync
-uv run --env-file .env python examples/run.py \
+uv sync --extra agent
+uv run --extra agent --env-file .env python examples/run.py \
   --app TextEdit --goal 'Replace the document text with a haiku about rain.'
 ```
 
@@ -99,17 +101,18 @@ with Agent("TextEdit", f"Replace the document with exactly '{sentence}'.", verif
     print(agent.state["verified"])
 ```
 
-`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim.
+`verify` receives the final observation: `True` confirms the goal, `False` rejects `DONE`, and `None` means the result could not be judged. Without it, `DONE` is the model's claim. `verified` covers the goal only, not the background interval: an optional `focus_check` callback connects your own full-task activation monitor (`True` clear so far, `False` an activation was recorded, `None` unavailable), and a violation or an unavailable configured monitor stops before further input. Keep monitoring through cleanup before accepting the task.
 
 Operations rated `risk >= 0.5` are held. Inspect the decision before calling `agent.approve_pending()`, or pass an `approve(decision)` callback. The rating comes from the same request and the same model; it is not an independent safety reviewer.
 
-`uv run --env-file .env open-computer-use inspect` serves a local inspector at `http://127.0.0.1:8767` with the element table, the pending decision, its risk and the executed history. It binds to loopback and requires its startup token for changes.
+`uv run --extra agent --env-file .env open-computer-use inspect` serves a local inspector at `http://127.0.0.1:8767` with the element table, the pending decision, its risk and the executed history. It binds to loopback and requires its startup token for changes.
 
 <details>
 <summary>More backend settings</summary>
 
 - **Jev** answers structured choice heads instead of writing JSON: set `JEV_API_KEY`, optionally `JEV_BASE_URL` and `JEV_MODEL`. Jev cannot write field values; `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` and `TEXT_MODEL` configure that helper and fall back to the decision backend's settings.
 - The chat backend uses JSON schema or JSON object responses. `DECISION_RESPONSE_FORMAT=json_schema` or `json_object` overrides provider detection; `DECISION_REASONING=default` keeps the provider's reasoning behaviour. No token logprobs are requested.
+- The built-in agent and the inspector live in the optional `agent` extra (`pip install "open-computer-use[agent]"` or `uv sync --extra agent`).
 - The product reads only environment variables the user configured.
 
 </details>
@@ -134,7 +137,7 @@ File names identified by `AXFilename` offer selection only, never editing or ren
 
 ## Guarantees
 
-Every result and bridge exception carries a `disposition`:
+Every action result and bridge exception carries a `disposition`. A reply that lacks or contradicts it is a protocol failure: the bridge is reset, the in-flight mutation stays uncertain and nothing is replayed. An `AXBRIDGE_BIN` override must speak the current protocol.
 
 | Delivery | Evidence | Retry |
 | --- | --- | --- |
@@ -147,7 +150,7 @@ Every result and bridge exception carries a `disposition`:
 - **Identity.** Targets are bound to the process PID and start time. Role, name and optional native identifier must be unique across the captured surface, including unpublished nodes; an incomplete or ambiguous identity is not executable, and a changed child path alone cannot select another control.
 - **Transport.** AX metadata is batched per traversal, with separate read and write deadlines. A broken transport discards the helper; the next request starts a new one without replaying old input. Permission probes run in a fresh process.
 - **Secrets.** Secure fields are classified before value reads; their values and descendants are omitted and generated input is removed from public decisions and history. A secret the caller writes into the goal itself is not scrubbed.
-- **Focus.** `took_focus` samples the endpoints of one operation. Native APIs can still have app-specific side effects, so acceptance listens for macOS activation events across the whole task: a transient activation fails it, even if focus returns before the reply.
+- **Focus.** `took_focus` samples the endpoints of one operation; a known `true`, even one returned with a post-dispatch error, stops the built-in agent. Native APIs can still have app-specific side effects, so acceptance listens for macOS activation events across the whole task: a transient activation fails it, even if focus returns before the reply.
 
 ## Limits
 
@@ -160,7 +163,7 @@ See [remaining boundaries](todo.md).
 
 ## Verification
 
-`examples/calculator.py` and `examples/textedit.py` read their intended results back from the app. [The background acceptance runner](evals/README.md) keeps 16 task definitions, reads real app results independently and requires a complete activation-event record through cleanup; it leaves already-running user apps alone and records unavailable cases explicitly. Historical scores are not current results.
+`examples/calculator.py` runs one task through the shared acceptance runner (pass `--max-calls`, `--usage-file` and `--output` for your approved batch; `--goal` and `--expect` customise it). `examples/textedit.py` edits an already-open disposable document and reports its goal reading only. [The background acceptance runner](evals/README.md) keeps 16 task definitions, reads real app results independently and requires a complete activation-event record through cleanup; it leaves already-running user apps alone and records unavailable cases explicitly. Historical scores are not current results.
 
 `scripts/mock_model.py` is a loopback stand-in for exercising transport and execution without paid model calls; it proves nothing about model intelligence. CI runs the Python contracts, native-source guards and the Swift build, which do not replace a real background task.
 
