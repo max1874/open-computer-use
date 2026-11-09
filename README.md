@@ -182,4 +182,4 @@ See [remaining boundaries](todo.md).
 | `cli.py` | `observe` / `act` for an agent acting as the decision model |
 | `demo.py` | Local inspector |
 
-The [design notes](docs/design.md) explain each boundary. Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). MIT licensed; see [LICENSE](LICENSE).
+The [design notes](docs/design.md) explain each boundary; [comparable projects](docs/comparison.md) covers how it differs from similar tools. Inspired by [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast). MIT licensed; see [LICENSE](LICENSE).
