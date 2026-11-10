@@ -24,4 +24,10 @@ What to watch: the method is shared, so the comparison that matters is a measure
 
 ### Background mouse probe, 2026-11-10
 
-A throwaway Swift probe sent synthetic mouse events to one process while another app stayed frontmost: Finder double-click to open a folder and drag a file into a folder, TextEdit triple-click to select a line and drag to select text. Each ran with `CGEventPostToPid` without and with the window-number fields (91/92), then with the private `CGEventSetWindowLocation` plus `CGEventPostToPid` or SkyLight's `SLEventPostToPid`. All 16 attempts had no effect read back from the app (window title, file on disk, `AXSelectedTextRange`) and produced zero activations. Finder's `AXOpen` on the row is unsupported (-25205); `AXConfirm` succeeds and does nothing. Not yet run: a positive control with the target frontmost, which would show the probe's coordinates and readback detect a success. Until then this says no route found, not that none exists.
+A throwaway Swift probe sent synthetic mouse events to one process while another app stayed frontmost, and read each result back from the app (window title, file on disk, `AXSelectedTextRange`) with an activation observer running.
+
+- Window number in fields 91/92, with or without the private `CGEventSetWindowLocation`, `SLEventPostToPid`, or a HID or private-state source: no effect in any case (24 attempts), zero activations.
+- Window number in field 51 plus field 58, posted with public `CGEventPostToPid`, the recipe measured in [callstack/agent-device#3213](https://github.com/callstack/agent-device/issues/3213) (item 13, credited there to cua): TextEdit triple-click selected the line, zero activations, pointer unchanged. Finder double-click to open a folder failed at the name, icon, row edge and row centre. Drags failed in both apps; #3213 measured drags as needing the private focus-without-raise call (`SLPSPostEventRecordTo`), which makes the app AppKit-active while the frontmost app stays unchanged.
+- Finder's `AXOpen` on the row is unsupported (-25205); `AXConfirm` succeeds and does nothing. Selecting the row and posting Cmd-Down to Finder's pid does not open it either.
+
+agent-desktop does not set field 51 (`crates/macos/src/input/mouse/mod.rs` sets only the click state), which is why its double-click, triple-click and secondary click need `--headed`.
