@@ -6,7 +6,7 @@ Read against source, not only README. Update an entry when its project or ours c
 
 [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Vercel Labs, Rust, Apache-2.0, started 2026-02) is the closest project: a computer-use CLI that reads the OS accessibility tree and acts on refs, with no model inside. Read at commit `b43ac4f` (2026-11-05).
 
-**Shared design.** Both observe the accessibility tree instead of pixels, bind every target to the observation that produced it and refuse stale or ambiguous ones, act headless by default through semantic AX actions, and send keys to the target process (`CGEventPostToPid`). Both classify delivery so that only an undelivered action may be retried (`crates/core/src/actions/delivery_semantics.rs`: `NotDelivered` is `safe`, uncertain or delivered is `unsafe`). Its `jev-desktop` skill uses the same per-turn shape as our Agent: one request picks the operation and its target.
+**Shared design.** Both observe the accessibility tree instead of pixels, bind every target to the observation that produced it and refuse stale or ambiguous ones, act headless by default through semantic AX actions, and send keys to the target process (`CGEventPostToPid`). Both classify delivery so that only an undelivered action may be retried (`crates/core/src/actions/delivery_semantics.rs`: `NotDelivered` is `safe`, uncertain or delivered is `unsafe`). Both mark secure text fields and omit their values. Its `jev-desktop` skill uses the same per-turn shape as our Agent: one request picks the operation and its target. Its real-app acceptance (`tests/real-apps/acceptance-v1.md`, frozen 2026-09-20) uses the same method as our evals: independent readback from the app, plus `NSWorkspace` activation and input-event counters recorded through each action (`tests/real-apps/headless_probe.swift`); it reports "Overall measured score: not established".
 
 **Where it is broader.** macOS, Windows (UI Automation) and Linux (AT-SPI); about 60 commands covering windows, notifications, clipboard, waits and batches; an MCP server and a C library; npm and Homebrew distribution.
 
@@ -15,8 +15,9 @@ Read against source, not only README. Update an entry when its project or ours c
 | | agent-desktop | open-computer-use |
 | --- | --- | --- |
 | Focus | Headless is the default; `--headed`, `focus-window` and app activation (`activateWithOptions`) exist as escape hatches | The bridge has no activation, pointer or screenshot path; an unsupported surface stops |
-| Acceptance | The agent snapshots again | The result read back from the app, plus an independent record of zero app activations over the whole task |
+| Acceptance | Same method in `tests/real-apps`; no measured score published | Same method in `evals/`; one single-run reading of 11 / 16 tasks with zero activations (2026-11-03, `max/evals` branch, before later changes) |
 | Action space | Wide, one command per capability | `observe` / `act`; a new operation is measured against tasks that do not need it |
 | Model | None; `jev-desktop` lives in the repository as a skill | Optional built-in Agent with an OpenAI-compatible or Jev backend |
+| Whole-Mac changes | No gate found | System Settings runs navigation only unless the caller passes `--machine-wide` |
 
-What to watch: if agent-desktop adds a mode that guarantees no activation for a whole task and measures it, our remaining distinction is the activation record as acceptance and the smaller action space.
+What to watch: the method is shared, so the comparison that matters is a measured one. If agent-desktop publishes task results with zero activations, our remaining distinctions are the System Settings gate, the built-in Agent and the smaller action space. Background double-click, triple-click, hover and drag need `--headed` in agent-desktop and are absent here; neither project does them without activation.
