@@ -21,3 +21,7 @@ Read against source, not only README. Update an entry when its project or ours c
 | Whole-Mac changes | No gate found | System Settings runs navigation only unless the caller passes `--machine-wide` |
 
 What to watch: the method is shared, so the comparison that matters is a measured one. If agent-desktop publishes task results with zero activations, our remaining distinctions are the System Settings gate, the built-in Agent and the smaller action space. Background double-click, triple-click, hover and drag need `--headed` in agent-desktop and are absent here; neither project does them without activation.
+
+### Background mouse probe, 2026-11-10
+
+A throwaway Swift probe sent synthetic mouse events to one process while another app stayed frontmost: Finder double-click to open a folder and drag a file into a folder, TextEdit triple-click to select a line and drag to select text. Each ran with `CGEventPostToPid` without and with the window-number fields (91/92), then with the private `CGEventSetWindowLocation` plus `CGEventPostToPid` or SkyLight's `SLEventPostToPid`. All 16 attempts had no effect read back from the app (window title, file on disk, `AXSelectedTextRange`) and produced zero activations. Finder's `AXOpen` on the row is unsupported (-25205); `AXConfirm` succeeds and does nothing. Not yet run: a positive control with the target frontmost, which would show the probe's coordinates and readback detect a success. Until then this says no route found, not that none exists.
