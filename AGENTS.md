@@ -10,7 +10,7 @@ window → indexed elements → operation + target → guarded execution → obs
 - One request chooses the operation, every target head and risk on the same observed state. Consume only the matching head. The model may choose only observed targets and supported operations.
 - Never replay a mutation. Consume its decision before input and record delivery before post-action observation. Unknown delivery stops with history intact. Preserve returned focus facts even if read-back fails.
 - Capture-time uniqueness and a fresh target census guard execution. Unknown identities, incomplete reads and process replacement refuse input. Preserve secure classification before value reads, redacted history, separate AX deadlines and bridge replacement after transport failure.
-- Keep the action space small. Measure any new operation against tasks that do not need it.
+- Computer use is for work a shell command, URL scheme, AppleScript or browser-harness cannot reach (Max, 2026-11-11). Add a task or operation only for such work, and do not count a terminal-reachable task as product evidence. Keep the action space small. Measure any new operation against tasks that do not need it.
 - Preserve separate content/control publication budgets. A content-heavy window must not hide its toolbar. Static text names come from their values. Inspect traversal depth before declaring an Electron app inaccessible.
 - SELECT needs observed options. Do not expand it based on an unmeasured assumption that closed menus expose choices. Popup/menu-opening presses can activate apps and stay withheld.
 - No token-probability reconstruction, extra planner or new compatibility framework without a concrete product requirement.
