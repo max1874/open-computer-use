@@ -3,9 +3,9 @@
 Read README.md and docs/design.md before editing. Keep one loop:
 window → indexed elements → operation + target → guarded execution → observe.
 
-- Essential variables: the requested result is observed in the target app, and the entire task takes foreground focus zero times. Neither DONE nor an inactive endpoint proves acceptance. Observe macOS app-activation events independently across the same task interval; a transient activation followed by restoration still fails.
+- Essential variables: the requested result is observed in the target app, and the entire task takes foreground focus zero times. Neither DONE nor an inactive endpoint proves acceptance. Observe macOS app-activation events independently across the same task interval; a transient activation followed by restoration still fails. The bar is what the user can perceive (Max, 2026-11-11): the frontmost app, menu-bar owner, window stacking above the user's windows, pointer position and where real keystrokes go must all stay unchanged. App-internal key or active state that changes none of these is allowed.
 - One app and one natural-language goal. No per-app scripts, invented coordinates or generated executable code.
-- The native bridge is the only executor. Do not reintroduce activation, mouse input, dragging, screenshots, a visual fallback or host-specific execution loops. Unsupported surfaces stop explicitly.
+- The native bridge is the only executor. Do not reintroduce activation, pointer movement, HID-level mouse input, screenshots, a visual fallback or host-specific execution loops. Mouse events posted to the target process are allowed when they meet the perception bar above (measured recipe in docs/comparison.md). Unsupported surfaces stop explicitly.
 - Keep app-local field focus and selection separate from activating an application. Keyboard events go only to the target process. Native row CLICK must refuse when its capability disappears; no physical fallback.
 - One request chooses the operation, every target head and risk on the same observed state. Consume only the matching head. The model may choose only observed targets and supported operations.
 - Never replay a mutation. Consume its decision before input and record delivery before post-action observation. Unknown delivery stops with history intact. Preserve returned focus facts even if read-back fails.
