@@ -48,7 +48,7 @@ open-computer-use/install.sh
 
 ```console
 $ open-computer-use status
-{"accessibility": true, "frontmost": "Otty", "frontmost_pid": 2544, "locked": false}
+{"accessibility": true, "frontmost": "Otty", "frontmost_pid": 2544, "locked": false, "sandboxed": false}
 ```
 
 The loop is observe, act, read back:
