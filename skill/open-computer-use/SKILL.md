@@ -26,9 +26,14 @@ another app the whole time.
 open-computer-use status
 ```
 
-`accessibility: false` means the app running this shell lacks the
-Accessibility permission: tell the user which System Settings switch to turn on
-and stop; never trigger the prompt yourself. `locked: true` means the screen is
+`sandboxed: true` means this shell runs inside a sandbox, which hides the
+accessibility tree and makes `accessibility` read false whatever System Settings
+says: run every `open-computer-use` command outside it (in Codex, request
+escalation for it) and check `status` again; never ask the user for a permission
+because of a sandboxed reading. Outside a sandbox, `accessibility: false` means
+the app running this shell lacks the Accessibility permission: tell the user
+which System Settings switch to turn on and stop; never trigger the prompt
+yourself. `locked: true` means the screen is
 locked and every table comes back empty: stop.
 
 The target app must be running. Start one without bringing it forward with

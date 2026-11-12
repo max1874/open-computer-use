@@ -1462,9 +1462,18 @@ func freshPermissions() throws -> [String: Any] {
     return status
 }
 
+/// libsystem_sandbox's check, which has no public header. With no operation it
+/// answers whether the process runs under Seatbelt at all.
+@_silgen_name("sandbox_check")
+private func sandbox_check(_ pid: pid_t, _ operation: UnsafePointer<CChar>?, _ type: Int32) -> Int32
+
 func statusJSON() -> [String: Any] {
     let front = frontmostApp()
     return [
+        // A sandbox denies the accessibility and window-server lookups, so inside
+        // one `accessibility` reads false even when the host app has the permission
+        // (Codex's workspace-write shell, 2026-11-12).
+        "sandboxed": sandbox_check(getpid(), nil, 0) != 0,
         "accessibility": AXIsProcessTrusted(),
         "locked": screenLocked(),
         "frontmost": front?.localizedName ?? "",

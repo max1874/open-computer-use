@@ -53,7 +53,7 @@ class MachineWideContracts(unittest.TestCase):
     def desktop(self, **options):
         bridge = Mock()
         bridge.call.side_effect = lambda method, **_: (
-            {"accessibility": True, "locked": False} if method == "status"
+            {"sandboxed": False, "accessibility": True, "locked": False} if method == "status"
             else {"disposition": disposition("delivered_unverified")})
         with patch("open_computer_use.desktop.Bridge", return_value=bridge):
             return Desktop("System Settings", **options), bridge

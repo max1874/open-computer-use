@@ -206,6 +206,12 @@ class Desktop:
     def __init__(self, app, *, menus=True, limit=250, machine_wide=False):
         self.bridge = Bridge()
         status = self.bridge.call("status")
+        if status["sandboxed"]:
+            self.close()
+            raise RuntimeError(
+                "This shell runs inside a sandbox, which hides the accessibility tree whatever "
+                "System Settings says. Run open-computer-use outside it (in Codex, request escalation)."
+            )
         if not status["accessibility"]:
             self.close()
             raise RuntimeError(
