@@ -44,7 +44,7 @@ git clone https://github.com/max1874/open-computer-use.git
 open-computer-use/install.sh
 ```
 
-`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool (a `git pull` is the update) and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
+`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool (a `git pull` is the update) and copies [the skill](skills/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
 
 ```console
 $ open-computer-use status

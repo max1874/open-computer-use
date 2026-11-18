@@ -19,11 +19,14 @@ uv tool install --quiet --force --python 3.12 --editable "$REPO"
 echo "command: $(command -v open-computer-use || echo "open-computer-use (add ~/.local/bin to PATH)")"
 
 # SKILL.md is copied, never linked: Claude Code and Codex both skip a skill whose
-# SKILL.md is a symlink, silently.
+# SKILL.md is a symlink, silently. The skill directory itself may be a link to this
+# checkout; then it is already current.
 for dir in ${OCU_SKILL_DIRS:-"$HOME/.claude/skills" "$HOME/.codex/skills"}; do
   [ -d "$dir" ] || continue
-  mkdir -p "$dir/open-computer-use"
-  cp "$REPO/skill/open-computer-use/SKILL.md" "$dir/open-computer-use/SKILL.md"
+  if [ ! "$dir/open-computer-use" -ef "$REPO/skills/open-computer-use" ]; then
+    mkdir -p "$dir/open-computer-use"
+    cp "$REPO/skills/open-computer-use/SKILL.md" "$dir/open-computer-use/SKILL.md"
+  fi
   echo "skill: $dir/open-computer-use"
 done
 
