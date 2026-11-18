@@ -17,6 +17,7 @@ import sys
 import time
 from contextlib import closing
 
+from . import __version__
 from .actions import EDITING_KEYS, action_space
 from .desktop import Bridge, BridgeError, Desktop, Executed, StaleWindow, UnknownOutcome
 
@@ -121,6 +122,7 @@ def act(options):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="open-computer-use", description=__doc__.split("\n")[0])
+    parser.add_argument("--version", action="version", version=f"open-computer-use {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="permissions, screen lock and the frontmost app")
     commands.add_parser("apps", help="running apps")
