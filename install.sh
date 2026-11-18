@@ -42,7 +42,7 @@ echo "command: $(command -v open-computer-use || echo "open-computer-use (add ~/
 # SKILL.md is copied, never linked: Claude Code and Codex both skip a skill whose
 # SKILL.md is a symlink, silently. The skill directory itself may be a link to this
 # checkout; then it is already current.
-for dir in ${OCU_SKILL_DIRS:-"$HOME/.claude/skills" "$HOME/.codex/skills"}; do
+for dir in ${OCU_SKILL_DIRS:-"$HOME/.claude/skills" "$HOME/.agents/skills"}; do
   [ -d "$dir" ] || continue
   if [ ! "$dir/open-computer-use" -ef "$REPO/skills/open-computer-use" ]; then
     mkdir -p "$dir/open-computer-use"
