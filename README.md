@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/max1874/open-computer-use/main/inst
 
 That fetches the latest release into `~/.local/share/open-computer-use/repo` and runs its [`install.sh`](install.sh); rerun the same line to update, add `-s -- v0.1.0` to pin a release, and check with `open-computer-use --version`. To work on it, clone the repository and run `install.sh` from the clone instead; the tool then follows the clone, so a `git pull` is the update.
 
-`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skills/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
+`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skills/open-computer-use/SKILL.md) into `~/.claude/skills` (Claude Code) and `~/.agents/skills` (Codex and other agents) when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
 
 ```console
 $ open-computer-use status
