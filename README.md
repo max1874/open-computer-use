@@ -40,11 +40,12 @@ Requires macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/), the Swift toolch
 Claude Code, Codex or any agent with a shell can be the decision model itself. No model backend or API key is involved, and the CLI has no Python runtime dependencies.
 
 ```sh
-git clone https://github.com/max1874/open-computer-use.git
-open-computer-use/install.sh
+curl -fsSL https://raw.githubusercontent.com/max1874/open-computer-use/main/install.sh | sh
 ```
 
-`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool (a `git pull` is the update) and copies [the skill](skill/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
+That fetches the latest release into `~/.local/share/open-computer-use/repo` and runs its [`install.sh`](install.sh); rerun the same line to update, add `-s -- v0.1.0` to pin a release, and check with `open-computer-use --version`. To work on it, clone the repository and run `install.sh` from the clone instead; the tool then follows the clone, so a `git pull` is the update.
+
+`install.sh` is idempotent. It compiles the bridge, installs `open-computer-use` as an editable uv tool and copies [the skill](skills/open-computer-use/SKILL.md) into `~/.claude/skills` and `~/.codex/skills` when they exist. Then enable the agent's host app under System Settings › Privacy & Security › Accessibility and check:
 
 ```console
 $ open-computer-use status
