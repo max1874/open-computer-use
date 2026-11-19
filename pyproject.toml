@@ -1,6 +1,6 @@
 [project]
 name = "open-computer-use"
-version = "0.1.0"
+version = "0.1.1"
 description = "A macOS computer-use agent that chooses instead of generating. Native background execution without activating apps."
 readme = "README.md"
 license = "MIT"

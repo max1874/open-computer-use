@@ -3,7 +3,7 @@
 from .desktop import Desktop, StaleWindow
 
 __all__ = ["Agent", "Desktop", "StaleWindow"]
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def __getattr__(name):
